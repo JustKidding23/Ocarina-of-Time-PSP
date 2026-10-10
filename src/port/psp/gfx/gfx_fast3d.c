@@ -227,9 +227,6 @@ struct TriPipelineState {
     bool alpha_mul_env;
     float tex_u_scale[2], tex_v_scale[2];
     float tex_u_bias[2], tex_v_bias[2];
-    float tex_u_shift_scale[2], tex_v_shift_scale[2];
-    float tex_u_nominal_span[2], tex_v_nominal_span[2];
-    bool tex_u_scale_to_primitive[2], tex_v_scale_to_primitive[2];
 } __attribute__((aligned(4)));
 
 typedef struct TextureTileState {
@@ -1906,8 +1903,13 @@ static unsigned int gfx_texture_cache_upload_size(uint16_t width, uint16_t heigh
     }
 
     if (upload_size > sizeof(psp_texture_stage_buf)) {
-        upload_size = (size_t)width * height * bytes_per_pixel;
+        upload_width = width;
+        upload_height = height;
     }
+
+    /* The GE rounds each texture row to a 16-byte stride. Tiny intensity
+     * maps need that storage too, even though their sampling width is 8. */
+    upload_size = (((size_t)upload_width * bytes_per_pixel + 15) & ~(size_t)15) * upload_height;
 
     if (upload_size > (size_t)0xFFFFFFFFU) {
         return 0xFFFFFFFFU;
@@ -3109,18 +3111,15 @@ static void gfx_prepare_texture_coord_state(struct TriPipelineState* state, int 
     const float shift_scale_s = gfx_texture_shift_scale(tileState->shifts);
     const float shift_scale_t = gfx_texture_shift_scale(tileState->shiftt);
 
-    state->tex_u_shift_scale[coordSlot] = shift_scale_s;
-    state->tex_v_shift_scale[coordSlot] = shift_scale_t;
+    const float nominal_span_u = 8.0f * (tileState->lrs - tileState->uls + 4);
+    const float nominal_span_v = 8.0f * (tileState->lrt - tileState->ult + 4);
 
-    state->tex_u_nominal_span[coordSlot] = 8.0f * (tileState->lrs - tileState->uls + 4);
-    state->tex_v_nominal_span[coordSlot] = 8.0f * (tileState->lrt - tileState->ult + 4);
-
-    if (state->tex_u_nominal_span[coordSlot] == 0.0f || state->tex_v_nominal_span[coordSlot] == 0.0f) {
+    if (nominal_span_u == 0.0f || nominal_span_v == 0.0f) {
         return;
     }
 
-    const float inv_nominal_span_u = 1.0f / state->tex_u_nominal_span[coordSlot];
-    const float inv_nominal_span_v = 1.0f / state->tex_v_nominal_span[coordSlot];
+    const float inv_nominal_span_u = 1.0f / nominal_span_u;
+    const float inv_nominal_span_v = 1.0f / nominal_span_v;
 
     /* Reuse each reciprocal for scale and bias. PSP scalar floating-point
      * division is expensive, and this state is rebuilt for every material. */
@@ -3130,8 +3129,9 @@ static void gfx_prepare_texture_coord_state(struct TriPipelineState* state, int 
         (filter_bias - tileState->uls * 8.0f) * inv_nominal_span_u;
     state->tex_v_bias[coordSlot] =
         (filter_bias - tileState->ult * 8.0f) * inv_nominal_span_v;
-    state->tex_u_scale_to_primitive[coordSlot] = tileState->masks == G_TX_NOMASK;
-    state->tex_v_scale_to_primitive[coordSlot] = tileState->maskt == G_TX_NOMASK;
+    /* G_TX_NOMASK clamps at the tile edge; it does not fit the tile to the
+     * primitive. The moon uses 128-texel UVs for a 64-texel tile, leaving the
+     * rest of its quad transparent. Rescaling those UVs doubles its diameter. */
 #if defined(TARGET_PSP)
     {
         const struct TextureHashmapNode* texture_node = rendering_state.textures[textureSlot];
@@ -3173,8 +3173,6 @@ static void gfx_prepare_flame_atlas_coord_state(struct TriPipelineState* state) 
     const uint32_t atlasX = (phase % GFX_FLAME_ATLAS_COLUMNS) * GFX_FLAME_ATLAS_FRAME_WIDTH;
     const uint32_t atlasY = (phase / GFX_FLAME_ATLAS_COLUMNS) * GFX_FLAME_ATLAS_FRAME_HEIGHT;
 
-    state->tex_u_nominal_span[0] = textureSpanU;
-    state->tex_v_nominal_span[0] = textureSpanV;
     state->tex_u_scale[0] = (GFX_FLAME_ATLAS_FRAME_WIDTH - 1.0f) /
                             (GFX_FLAME_ATLAS_WIDTH * textureSpanU);
     state->tex_v_scale[0] = (GFX_FLAME_ATLAS_FRAME_HEIGHT - 1.0f) /
@@ -3433,12 +3431,6 @@ static void gfx_prepare_tri_pipeline_state(void) {
         state->tex_v_scale[i] = 0.0f;
         state->tex_u_bias[i] = 0.0f;
         state->tex_v_bias[i] = 0.0f;
-        state->tex_u_shift_scale[i] = 1.0f;
-        state->tex_v_shift_scale[i] = 1.0f;
-        state->tex_u_nominal_span[i] = 0.0f;
-        state->tex_v_nominal_span[i] = 0.0f;
-        state->tex_u_scale_to_primitive[i] = false;
-        state->tex_v_scale_to_primitive[i] = false;
     }
     if (state->use_texture) {
         int base_texture = state->two_texture_blend ? 0 : active_texture;
@@ -3768,41 +3760,6 @@ static float gfx_hud_anchor_offset_pixels(void) {
     return sHudAnchorOffsetPixels;
 }
 
-static GFX_DL_HANDLER void gfx_apply_unmasked_texture_axis(const struct LoadedVertex *const vertices[],
-                                                           size_t n_vertices, bool use_u, float nominal_span,
-                                                           float shift_scale, float *scale, float *bias) {
-    float min_coord;
-    float max_coord;
-    float span;
-
-    if (n_vertices == 0 || nominal_span <= 0.0f) {
-        return;
-    }
-
-    min_coord = (use_u ? vertices[0]->u : vertices[0]->v) * shift_scale;
-    max_coord = min_coord;
-
-    for (size_t i = 1; i < n_vertices; i++) {
-        const float coord = (use_u ? vertices[i]->u : vertices[i]->v) * shift_scale;
-
-        if (coord < min_coord) {
-            min_coord = coord;
-        }
-        if (coord > max_coord) {
-            max_coord = coord;
-        }
-    }
-
-    span = max_coord - min_coord;
-    if (span <= nominal_span + 1.0f) {
-        return;
-    }
-
-    /* Unmasked axes can use oversize UVs to stretch one tile, not repeat it. */
-    *scale = shift_scale / (span + 1.0f);
-    *bias = -min_coord / (span + 1.0f);
-}
-
 struct ShaderProgram {
     bool enabled;
     uint32_t shader_id;
@@ -3812,6 +3769,17 @@ struct ShaderProgram {
     int texture_ord[2];
     int num_inputs;
 };
+
+#ifndef OOT_PSP_NATIVE_MESH_ENTRIES
+#define OOT_PSP_NATIVE_MESH_ENTRIES 8
+#endif
+#if defined(TARGET_PSP) && defined(F3DEX_GBI_2) && OOT_PSP_NATIVE_MESH_ENTRIES > 0
+static void gfx_native_forget(uint64_t mask);
+static void gfx_native_materialize(uint64_t mask);
+#else
+#define gfx_native_forget(mask) ((void)0)
+#define gfx_native_materialize(mask) ((void)0)
+#endif
 
 static bool gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *vertices) {
 #if !defined(TARGET_PSP)
@@ -3837,6 +3805,8 @@ static bool gfx_sp_vertex(size_t n_vertices, size_t dest_index, const Vtx *verti
         gfx_log_bad_data_source("vertex", vertices, n_vertices * sizeof(Vtx));
         return false;
     }
+
+    gfx_native_forget((UINT64_MAX >> (64 - n_vertices)) << dest_index);
 
     {
         const struct GfxVfpuTransformState transformState = {
@@ -3976,6 +3946,8 @@ static bool gfx_sp_cull_display_list(uint32_t firstVertex, uint32_t lastVertex) 
         return false;
     }
 
+    gfx_native_materialize((UINT64_MAX >> (63 - lastVertex + firstVertex)) << firstVertex);
+
     /* G_CULLDL ends the current display list when every bounding-volume
      * vertex lies outside the same side of the view frustum. SPVertex has
      * already recorded those six homogeneous clip-plane tests in clip_rej. */
@@ -4067,6 +4039,8 @@ static void gfx_sp_triangles(uint32_t packed0, uint32_t packed1, uint8_t triangl
         const uint8_t vtx1_idx = ((packed >> 16) & 0xFF) / GFX_TRI_INDEX_DIVISOR;
         const uint8_t vtx2_idx = ((packed >> 8) & 0xFF) / GFX_TRI_INDEX_DIVISOR;
         const uint8_t vtx3_idx = (packed & 0xFF) / GFX_TRI_INDEX_DIVISOR;
+        if (vtx1_idx >= MAX_VERTICES || vtx2_idx >= MAX_VERTICES || vtx3_idx >= MAX_VERTICES) continue;
+        gfx_native_materialize((UINT64_C(1) << vtx1_idx) | (UINT64_C(1) << vtx2_idx) | (UINT64_C(1) << vtx3_idx));
         struct LoadedVertex *v1 = &rsp.loaded_vertices[vtx1_idx];
         struct LoadedVertex *v2 = &rsp.loaded_vertices[vtx2_idx];
         struct LoadedVertex *v3 = &rsp.loaded_vertices[vtx3_idx];
@@ -4169,45 +4143,8 @@ static void gfx_sp_triangles(uint32_t packed0, uint32_t packed1, uint8_t triangl
     const float* tex_v_scale = state->tex_v_scale;
     const float* tex_u_bias = state->tex_u_bias;
     const float* tex_v_bias = state->tex_v_bias;
-    float adjusted_tex_u_scale[2];
-    float adjusted_tex_v_scale[2];
-    float adjusted_tex_u_bias[2];
-    float adjusted_tex_v_bias[2];
     const uint32_t shader_program_id = rendering_state.shader_program->shader_id;
 
-    if (use_texture) {
-        const struct LoadedVertex *uv_vertices[3] = {v1, v2, v3};
-        const int coord_count = state->two_texture_blend ? 2 : 1;
-        const bool adjust_tex_coords =
-            state->tex_u_scale_to_primitive[0] || state->tex_v_scale_to_primitive[0] ||
-            (state->two_texture_blend &&
-             (state->tex_u_scale_to_primitive[1] || state->tex_v_scale_to_primitive[1]));
-
-        if (adjust_tex_coords) {
-            memcpy(adjusted_tex_u_scale, state->tex_u_scale, sizeof(adjusted_tex_u_scale));
-            memcpy(adjusted_tex_v_scale, state->tex_v_scale, sizeof(adjusted_tex_v_scale));
-            memcpy(adjusted_tex_u_bias, state->tex_u_bias, sizeof(adjusted_tex_u_bias));
-            memcpy(adjusted_tex_v_bias, state->tex_v_bias, sizeof(adjusted_tex_v_bias));
-            tex_u_scale = adjusted_tex_u_scale;
-            tex_v_scale = adjusted_tex_v_scale;
-            tex_u_bias = adjusted_tex_u_bias;
-            tex_v_bias = adjusted_tex_v_bias;
-
-            for (int coord = 0; coord < coord_count; coord++) {
-                if (state->tex_u_scale_to_primitive[coord]) {
-                    gfx_apply_unmasked_texture_axis(uv_vertices, 3, true, state->tex_u_nominal_span[coord],
-                                                    state->tex_u_shift_scale[coord], &adjusted_tex_u_scale[coord],
-                                                    &adjusted_tex_u_bias[coord]);
-                }
-                if (state->tex_v_scale_to_primitive[coord]) {
-                    gfx_apply_unmasked_texture_axis(uv_vertices, 3, false, state->tex_v_nominal_span[coord],
-                                                    state->tex_v_shift_scale[coord], &adjusted_tex_v_scale[coord],
-                                                    &adjusted_tex_v_bias[coord]);
-                }
-            }
-        }
-    }
-    
     const size_t new_tri_count = clipped_vertices_num / 3;
 
     if (new_tri_count == 0) {
@@ -5599,14 +5536,14 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     lr->x = (unsigned short)lrxf;
     lr->y = (unsigned short)lryf;
 
-    // The coordinates for texture rectangles shall bypass the 3D viewport/scissor state.
+    /* RDP rectangles bypass the RSP viewport, but still obey the RDP scissor.
+     * The skybox fog filter uses a screen-sized rectangle with the letterbox
+     * scissor active; expanding that scissor colors the edges of the bars. */
     struct XYWidthHeight default_viewport = {0, 0, gfx_current_dimensions.width, gfx_current_dimensions.height};
     struct XYWidthHeight viewport_saved = rdp.viewport;
-    struct XYWidthHeight scissor_saved = rdp.scissor;
     uint32_t geometry_mode_saved = rsp.geometry_mode;
     
     rdp.viewport = default_viewport;
-    rdp.scissor = default_viewport;
     rdp.viewport_or_scissor_changed = true;
     /* RDP rectangles do not use RSP geometry flags, but GU only writes the
      * depth buffer while its depth unit is enabled. Preserve depth processing
@@ -5618,7 +5555,6 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
     
     rsp.geometry_mode = geometry_mode_saved;
     rdp.viewport = viewport_saved;
-    rdp.scissor = scissor_saved;
     rdp.viewport_or_scissor_changed = true;
     gfx_mark_tri_pipeline_dirty();
     
@@ -6514,6 +6450,277 @@ static bool gfx_translate_dl_cursor(Gfx** cmdP) {
 #define C0(pos, width) ((cmd->words.w0 >> (pos)) & ((1U << width) - 1))
 #define C1(pos, width) ((cmd->words.w1 >> (pos)) & ((1U << width) - 1))
 
+/* Native mesh cache deliberately accepts only a state-free F3DEX2 suffix:
+ * VTX/TRI1/TRI2/ENDDL, immutable packed assets, unlit SHADE with at most one immutable texture.
+ * No command or asset pointer is read again on a hit. Material changes before
+ * the suffix continue through the normal interpreter/pipeline state cache. */
+#ifndef OOT_PSP_NATIVE_MESH_ENTRIES
+#define OOT_PSP_NATIVE_MESH_ENTRIES 8
+#endif
+#define NATIVE_MESH_VERTICES 128
+#define NATIVE_MESH_INDICES 768
+#if defined(TARGET_PSP) && defined(F3DEX_GBI_2) && OOT_PSP_NATIVE_MESH_ENTRIES > 0
+extern void gfx_scegu_draw_native_mesh(const void* vertices, const uint16_t* indices,
+                                      unsigned int count, const float model[4][4], uint32_t cull);
+struct NativeMaterial {
+    const uint8_t* texture;
+    uint32_t geometry_mode, white_alpha;
+    float u_scale, v_scale, u_bias, v_bias;
+    uint16_t s, t;
+};
+struct NativeMesh {
+    const Gfx* commands;
+    Gfx* end;
+    uint32_t generation;
+    struct NativeMaterial material;
+    uintptr_t segments[4];
+    uint64_t written;
+    uint16_t final[MAX_VERTICES];
+    uint16_t vertex_count, index_count;
+    bool pinned, valid;
+    uint8_t pending_groups;
+    float min[3], max[3];
+    Vtx source[NATIVE_MESH_VERTICES];
+    psp_fast_t vertices[NATIVE_MESH_VERTICES] __attribute__((aligned(16)));
+    uint16_t indices[NATIVE_MESH_INDICES] __attribute__((aligned(16)));
+};
+static struct NativeMesh sNativeMeshes[OOT_PSP_NATIVE_MESH_ENTRIES] __attribute__((aligned(64)));
+static unsigned int sNativeMeshVictim;
+/* RSP vertex loads have observable effects after ENDDL. Retain only the final
+ * slot contents and load-time state, separately from immutable mesh storage.
+ * A later VTX discards overwritten slots; only a fallback reader transforms
+ * surviving slots. At most 64 disjoint nonempty groups can exist. */
+static struct NativePending {
+    uint64_t mask;
+    struct NativeMesh* mesh;
+    float model[4][4], projection[4][4];
+    float aspect;
+    uint16_t s, t;
+} sNativePending[MAX_VERTICES] __attribute__((aligned(16)));
+static uint64_t sNativePendingMask;
+
+static void gfx_native_forget(uint64_t mask) {
+    if (!(sNativePendingMask & mask)) return;
+    sNativePendingMask &= ~mask;
+    for (unsigned int i = 0; i < MAX_VERTICES; i++) {
+        struct NativePending* p = &sNativePending[i];
+        if (!p->mask) continue;
+        p->mask &= ~mask;
+        if (!p->mask) p->mesh->pending_groups--;
+    }
+}
+
+static void gfx_native_materialize(uint64_t mask) {
+    if (!(sNativePendingMask & mask)) return;
+    sNativePendingMask &= ~mask;
+    for (unsigned int i = 0; i < MAX_VERTICES; i++) {
+        struct NativePending* p = &sNativePending[i];
+        uint64_t needed = p->mask & mask;
+        if (!needed) continue;
+        const struct GfxVfpuTransformState state = { p->model, p->projection, 0, 0, 0 };
+        for (unsigned int j = 0; j < MAX_VERTICES; j++) {
+            if (!(needed & (UINT64_C(1) << j))) continue;
+            struct LoadedVertex* d = &rsp.loaded_vertices[j];
+            const Vtx* source = &p->mesh->source[p->mesh->final[j]];
+            const Vtx_t* v = &source->v;
+            gfx_transform_vertices_vfpu(d, source, 1, &state);
+            d->_x *= p->aspect;
+            d->w = d->_w;
+            d->u = (int16_t)((v->tc[0] * p->s) >> 16);
+            d->v = (int16_t)((v->tc[1] * p->t) >> 16);
+            memcpy(&d->color, v->cn, sizeof(d->color));
+            d->clip_rej = 0;
+            if (d->_x < -d->_w) d->clip_rej |= X_POS;
+            if (d->_x > d->_w) d->clip_rej |= X_NEG;
+            if (d->_y < -d->_w) d->clip_rej |= Y_POS;
+            if (d->_y > d->_w) d->clip_rej |= Y_NEG;
+            if (d->_z < -d->_w) d->clip_rej |= Z_POS;
+            if (d->_z > d->_w) d->clip_rej |= Z_NEG;
+        }
+        p->mask &= ~needed;
+        if (!p->mask) p->mesh->pending_groups--;
+    }
+}
+
+static bool gfx_native_immutable(const void* ptr, size_t size) {
+    uint32_t flags;
+    const uint32_t required = OOT_PSP_EXTERNAL_ASSET_NATIVE | OOT_PSP_EXTERNAL_ASSET_IMMUTABLE_MESH;
+    return OotPsp_GetLoadedExternalAssetRangeFlags(ptr, size, &flags) && (flags & required) == required;
+}
+
+static bool gfx_native_build(struct NativeMesh* mesh, Gfx* cmd) {
+    uint16_t slots[MAX_VERTICES];
+    memset(slots, 0xff, sizeof(slots));
+    mesh->vertex_count = mesh->index_count = 0;
+    mesh->written = 0;
+    if (mesh->material.texture && !gfx_native_immutable(mesh->material.texture, rdp.loaded_texture[0].source_size_bytes)) return false;
+    for (unsigned int command = 0; command < 512; command++, cmd++) {
+        if (!gfx_native_immutable(cmd, sizeof(*cmd))) return false;
+        const uint32_t w0 = cmd->words.w0;
+        const unsigned int op = w0 >> 24;
+        if (op == G_VTX) {
+            uint32_t count, dest;
+            uintptr_t raw = cmd->words.w1;
+            /* Only object/keep mappings are part of this cache key. */
+            if (raw < PSP_NATIVE_ADDR_START && (raw >> 24) != 4 && (raw >> 24) != 6) return false;
+            if (!gfx_decode_vertex_cmd_f3dex2(w0, &count, &dest) ||
+                mesh->vertex_count + count > NATIVE_MESH_VERTICES) return false;
+            const Vtx* source = seg_addr(raw);
+            if (!gfx_native_immutable(source, count * sizeof(Vtx))) return false;
+            for (unsigned int j = 0; j < count; j++) {
+                unsigned int index = mesh->vertex_count++;
+                psp_fast_t* v = &mesh->vertices[index];
+                mesh->source[index] = source[j];
+                const struct NativeMaterial* m = &mesh->material;
+                v->u = (int16_t)((source[j].v.tc[0] * m->s) >> 16) * m->u_scale + m->u_bias;
+                v->v = (int16_t)((source[j].v.tc[1] * m->t) >> 16) * m->v_scale + m->v_bias;
+                memcpy(&v->color, source[j].v.cn, sizeof(v->color));
+                if (m->white_alpha) v->color.a = 255;
+                v->x = source[j].v.ob[0];
+                v->y = source[j].v.ob[1];
+                v->z = source[j].v.ob[2];
+                for (unsigned int axis = 0; axis < 3; axis++) {
+                    float value = source[j].v.ob[axis];
+                    if (index == 0 || value < mesh->min[axis]) mesh->min[axis] = value;
+                    if (index == 0 || value > mesh->max[axis]) mesh->max[axis] = value;
+                }
+                slots[dest + j] = index;
+                mesh->written |= UINT64_C(1) << (dest + j);
+            }
+        } else if (op == G_TRI1 || op == G_TRI2) {
+            unsigned int count = op == G_TRI2 ? 6 : 3;
+            if (mesh->index_count + count > NATIVE_MESH_INDICES) return false;
+            for (unsigned int j = 0; j < count; j++) {
+                uint32_t packed = j < 3 ? w0 : cmd->words.w1;
+                unsigned int raw = (packed >> (16 - (j % 3) * 8)) & 255;
+                unsigned int slot = raw / 2;
+                if ((raw & 1) || slot >= MAX_VERTICES || slots[slot] == UINT16_MAX) return false;
+                mesh->indices[mesh->index_count++] = slots[slot];
+            }
+        } else if (op == (uint8_t)G_ENDDL && mesh->index_count) {
+            memcpy(mesh->final, slots, sizeof(slots));
+            mesh->end = cmd;
+            sceKernelDcacheWritebackRange(mesh->vertices, sizeof(mesh->vertices));
+            sceKernelDcacheWritebackRange(mesh->indices, sizeof(mesh->indices));
+            return true;
+        } else {
+            return false; /* Includes branches, matrices, MODIFYVTX and all state changes. */
+        }
+    }
+    return false;
+}
+
+static bool gfx_native_visible(const struct NativeMesh* mesh) {
+    /* PSP clipping differs at the near plane and large offscreen primitives.
+     * Test eight bounds corners, not every vertex; crossing meshes fall back. */
+    for (unsigned int i = 0; i < 8; i++) {
+        float v[4], model[4], clip[4];
+        for (unsigned int axis = 0; axis < 3; axis++) v[axis] = (i & (1 << axis)) ? mesh->max[axis] : mesh->min[axis];
+        v[3] = 1;
+        gfx_transform_vec4(model, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], v);
+        gfx_transform_vec4(clip, rsp.P_matrix, model);
+        const float w = clip[3];
+        if (!(w > 0.001f && fabsf(clip[0]) < w && fabsf(clip[0] * sNdcAspectScale) < w &&
+              fabsf(clip[1]) < w && fabsf(clip[2]) < w)) return false;
+    }
+    return true;
+}
+
+static GFX_DL_HANDLER bool gfx_native_try(Gfx** cursor) {
+    const uint32_t allowed = G_ZBUFFER | G_SHADE | G_SHADING_SMOOTH | G_CULL_FRONT | G_CULL_BACK;
+    if ((rsp.geometry_mode & ~allowed) || !(rsp.geometry_mode & G_SHADE) || gfx_hud_anchor_enabled()) return false;
+    /* Cheap rejection before touching the ordinary state preparer. */
+    if (rdp.combine_color_mul_env || rdp.combine_color_mul_prim || rdp.combine_alpha_mul_env ||
+        rdp.combine_two_texture_blend || rdp.combine_flame_texture_atlas ||
+        (rdp.other_mode_l >> 30) == G_BL_CLR_FOG) return false;
+    gfx_prepare_tri_pipeline_state();
+    const struct TriPipelineState* state = &rendering_state.tri_pipeline;
+    if (state->use_fog || state->texture_tint_colors_corrected ||
+        state->comb->vertex_color_source[0] != CC_SHADE ||
+        (state->use_alpha && state->comb->vertex_color_source[1] != CC_SHADE &&
+         state->comb->vertex_color_source[1] != CC_0) ||
+        (rsp.geometry_mode & G_CULL_BOTH) == G_CULL_BOTH) return false;
+    if (state->use_texture && (state->comb->used_textures[1] || rdp.texture_tile[0].fmt == G_IM_FMT_CI ||
+        !rdp.loaded_texture[0].source_size_bytes)) return false;
+    struct NativeMaterial material = {0};
+    material.geometry_mode = rsp.geometry_mode;
+    material.white_alpha = state->use_alpha && state->comb->vertex_color_source[1] == CC_0;
+    if (state->use_texture) {
+        material.texture = rdp.loaded_texture[0].addr;
+        material.u_scale = state->tex_u_scale[0];
+        material.v_scale = state->tex_v_scale[0];
+        material.u_bias = state->tex_u_bias[0];
+        material.v_bias = state->tex_v_bias[0];
+        material.s = rsp.texture_scaling_factor.s;
+        material.t = rsp.texture_scaling_factor.t;
+    }
+    const uint32_t generation = OotPsp_GetExternalAssetGeneration();
+    const uintptr_t segments[4] = { (uintptr_t)rsp.segments[4], (uintptr_t)rsp.segments[6], gSegments[4], gSegments[6] };
+    struct NativeMesh* mesh = NULL;
+    for (unsigned int i = 0; i < OOT_PSP_NATIVE_MESH_ENTRIES; i++) {
+        struct NativeMesh* candidate = &sNativeMeshes[i];
+        if (candidate->commands == *cursor && candidate->generation == generation &&
+            memcmp(candidate->segments, segments, sizeof(segments)) == 0 &&
+            memcmp(&candidate->material, &material, sizeof(material)) == 0) {
+            mesh = candidate;
+            break;
+        }
+    }
+    if (!mesh) {
+        for (unsigned int i = 0; i < OOT_PSP_NATIVE_MESH_ENTRIES; i++) {
+            struct NativeMesh* candidate = &sNativeMeshes[sNativeMeshVictim++ % OOT_PSP_NATIVE_MESH_ENTRIES];
+            if (!candidate->pinned && !candidate->pending_groups) { mesh = candidate; break; }
+        }
+        if (!mesh) return false;
+        mesh->commands = *cursor;
+        mesh->generation = generation;
+        mesh->material = material;
+        memcpy(mesh->segments, segments, sizeof(segments));
+        mesh->valid = gfx_native_build(mesh, *cursor);
+    }
+    const float (*model)[4] = rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1];
+    if (!mesh->valid || model[0][3] != 0 || model[1][3] != 0 || model[2][3] != 0 ||
+        model[3][3] != 1 || !gfx_native_visible(mesh)) return false;
+    gfx_flush();
+    gfx_apply_projection_matrix();
+    gfx_scegu_draw_native_mesh(mesh->vertices, mesh->indices, mesh->index_count,
+                              rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], rsp.geometry_mode & G_CULL_BOTH);
+    mesh->pinned = true;
+#if defined(OOTDEBUG)
+    sPerformanceInputTriangleCount += mesh->index_count / 3;
+    sPerformanceOutputTriangleCount += mesh->index_count / 3;
+    sPerformanceDrawCallCount++;
+    if (rendering_state.alpha_blend) {
+        sPerformanceTranslucentDrawCallCount++;
+        sPerformanceTranslucentTriangleCount += mesh->index_count / 3;
+    } else {
+        sPerformanceOpaqueDrawCallCount++;
+        sPerformanceOpaqueTriangleCount += mesh->index_count / 3;
+    }
+    if (mesh->index_count / 3 > sPerformanceMaxBatchTriangles) sPerformanceMaxBatchTriangles = mesh->index_count / 3;
+#endif
+    gfx_native_forget(mesh->written);
+    sNativePendingMask |= mesh->written;
+    for (unsigned int i = 0; i < MAX_VERTICES; i++) {
+        if (sNativePending[i].mask) continue;
+        struct NativePending* p = &sNativePending[i];
+        p->mask = mesh->written;
+        p->mesh = mesh;
+        mesh->pending_groups++;
+        memcpy(p->model, rsp.modelview_matrix_stack[rsp.modelview_matrix_stack_size - 1], sizeof(p->model));
+        memcpy(p->projection, rsp.P_matrix, sizeof(p->projection));
+        p->aspect = sNdcAspectScale;
+        p->s = rsp.texture_scaling_factor.s;
+        p->t = rsp.texture_scaling_factor.t;
+        break;
+    }
+    *cursor = mesh->end; /* Execute ENDDL normally, preserving the return stack. */
+    return true;
+}
+#else
+#define gfx_native_try(cursor) false
+#endif
+
 static void gfx_run_dl(Gfx* cmd) {
 #define GFX_DL_RETURN_STACK_SIZE 64
     Gfx* returnStack[GFX_DL_RETURN_STACK_SIZE];
@@ -6595,6 +6802,7 @@ static void gfx_run_dl(Gfx* cmd) {
                 }
                 break;
             case G_VTX:
+                if (gfx_native_try(&cmd)) continue;
 #ifdef F3DEX_GBI_2
 #if defined(TARGET_PSP)
                 if (!gfx_sp_vertex_f3dex2(cmd->words.w0, cmd->words.w1)) {
@@ -6834,6 +7042,10 @@ static void gfx_run_dl(Gfx* cmd) {
 }
 
 static void gfx_sp_reset() {
+#if defined(TARGET_PSP) && defined(F3DEX_GBI_2) && OOT_PSP_NATIVE_MESH_ENTRIES > 0
+    /* Preserve the renderer's cross-run slot semantics before resetting RSP state. */
+    gfx_native_materialize(UINT64_MAX);
+#endif
     rsp.modelview_matrix_stack_size = 1;
     rsp.current_num_lights = 2;
     rsp.lights_changed = true;
@@ -7017,6 +7229,9 @@ void gfx_end_frame(void) {
     //sceIoWrite(1, "----END FRAME!\n", 16);
     if (!dropped_frame) {
         gfx_rapi->finish_render();
+#if defined(TARGET_PSP) && defined(F3DEX_GBI_2) && OOT_PSP_NATIVE_MESH_ENTRIES > 0
+        for (unsigned int i = 0; i < OOT_PSP_NATIVE_MESH_ENTRIES; i++) sNativeMeshes[i].pinned = false;
+#endif
         gfx_wapi->swap_buffers_end();
     }
 
