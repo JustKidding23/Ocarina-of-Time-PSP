@@ -919,6 +919,9 @@ static uint32_t sPerformanceTextureUploadCount;
 static size_t buf_vbo_len;
 static size_t buf_num_vert;
 static size_t buf_vbo_num_tris;
+#if defined(TARGET_PSP)
+static bool sBatchHasVisibleFog;
+#endif
 
 static struct GfxWindowManagerAPI *gfx_wapi;
 static struct GfxRenderingAPI *gfx_rapi;
@@ -1462,7 +1465,9 @@ static void gfx_flush(void) {
 #if defined(TARGET_PSP)
         const bool twoTextureBlend = rendering_state.tri_pipeline.two_texture_blend &&
                                      rendering_state.textures[0] != NULL && rendering_state.textures[1] != NULL;
-        const bool useFog = rendering_state.tri_pipeline.use_fog;
+        // A zero-alpha fog pass changes neither color nor depth. Avoid its
+        // vertex upload, state switches, and draw when the whole batch is clear.
+        const bool useFog = rendering_state.tri_pipeline.use_fog && sBatchHasVisibleFog;
         const bool fogUsesTextureAlpha = rendering_state.tri_pipeline.fog_uses_texture_alpha;
         const bool twoTextureAlphaFog =
             useFog && twoTextureBlend && rendering_state.tri_pipeline.two_texture_alpha_blend;
@@ -1572,6 +1577,9 @@ static void gfx_flush(void) {
         buf_vbo_len = 0;
         buf_num_vert = 0;
         buf_vbo_num_tris = 0;
+#if defined(TARGET_PSP)
+        sBatchHasVisibleFog = false;
+#endif
         //unsigned long t1 = get_time();
         /*if (t1 - t0 > 1000) {
             printf("f: %d %d\n", num, (int)(t1 - t0));
@@ -4232,7 +4240,9 @@ static void gfx_sp_triangles(uint32_t packed0, uint32_t packed1, uint8_t triangl
                                                   &overlayAlpha);
                 fogColor.a = baseAlpha;
                 buf_vbo_fog_tex1_alpha[buf_num_vert] = overlayAlpha;
+                sBatchHasVisibleFog |= overlayAlpha != 0;
             }
+            sBatchHasVisibleFog |= fogColor.a != 0;
             if (state->fog_uses_texture_alpha) {
                 psp_fog_textured_t* fogOut = &buf_vbo_fog.textured[buf_num_vert];
 
