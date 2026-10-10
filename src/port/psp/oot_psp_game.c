@@ -89,6 +89,8 @@ s32 gCurrentRegion = REGION_US;
 #define OOT_PSP_NATIVE_ADDR_END 0x0C000000U
 #define OOT_PSP_SEGMENTED_COLLISION_OFFSET_MAX 0x00010000U
 #define OOT_PSP_SAVE_PATH "oot-psp-save.bin"
+#define OOT_PSP_SAVE_TEMP_PATH "oot-psp-save.tmp"
+#define OOT_PSP_SAVE_BACKUP_PATH "oot-psp-save.bak"
 #define OOT_PSP_SAVE_IO_CHUNK_SIZE 0x4000
 
 volatile OSTime gAudioThreadUpdateTimeTotalPerGfxTask = 0;
@@ -165,30 +167,21 @@ static const char* OotPsp_GetSavePath(char* buffer, size_t bufferSize) {
     return OotPsp_ResolveRootPath(OOT_PSP_SAVE_PATH, buffer, bufferSize);
 }
 
-static void OotPsp_LoadSram(void) {
-    char pathBuffer[384];
-    const char* path = OotPsp_GetSavePath(pathBuffer, sizeof(pathBuffer));
+static s32 OotPsp_ReadSramFile(const char* path) {
     SceUID fd = sceIoOpen(path, PSP_O_RDONLY, 0);
     u8* out = sPspSram;
     size_t remaining = sizeof(sPspSram);
 
     if (fd < 0) {
         printf("oot-psp save not found path=%s err=%d\n", path, (int)fd);
-        return;
+        return false;
     }
 
     while (remaining != 0) {
         int chunk = remaining > OOT_PSP_SAVE_IO_CHUNK_SIZE ? OOT_PSP_SAVE_IO_CHUNK_SIZE : (int)remaining;
         int read = sceIoRead(fd, out, chunk);
 
-        if (read < 0) {
-            printf("oot-psp save read failed path=%s err=%d\n", path, read);
-            memset(sPspSram, 0, sizeof(sPspSram));
-            sceIoClose(fd);
-            return;
-        }
-
-        if (read == 0) {
+        if (read <= 0) {
             break;
         }
 
@@ -199,22 +192,39 @@ static void OotPsp_LoadSram(void) {
     sceIoClose(fd);
 
     if (remaining != 0) {
-        memset(out, 0, remaining);
-        printf("oot-psp save short read path=%s missing=%lu\n", path, (unsigned long)remaining);
-    } else {
-        printf("oot-psp save loaded path=%s size=%lu\n", path, (unsigned long)sizeof(sPspSram));
+        memset(sPspSram, 0, sizeof(sPspSram));
+        printf("oot-psp save incomplete path=%s missing=%lu\n", path, (unsigned long)remaining);
+        return false;
+    }
+
+    printf("oot-psp save loaded path=%s size=%lu\n", path, (unsigned long)sizeof(sPspSram));
+    return true;
+}
+
+static void OotPsp_LoadSram(void) {
+    char pathBuffer[384];
+
+    /* A save interrupted by power loss leaves the main file missing or short;
+     * the previous complete save is kept as the backup. */
+    if (!OotPsp_ReadSramFile(OotPsp_ResolveRootPath(OOT_PSP_SAVE_PATH, pathBuffer, sizeof(pathBuffer)))) {
+        OotPsp_ReadSramFile(OotPsp_ResolveRootPath(OOT_PSP_SAVE_BACKUP_PATH, pathBuffer, sizeof(pathBuffer)));
     }
 }
 
 static s32 OotPsp_FlushSram(void) {
     char pathBuffer[384];
+    char tempPathBuffer[384];
+    char backupPathBuffer[384];
     const char* path = OotPsp_GetSavePath(pathBuffer, sizeof(pathBuffer));
-    SceUID fd = sceIoOpen(path, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
+    const char* tempPath = OotPsp_ResolveRootPath(OOT_PSP_SAVE_TEMP_PATH, tempPathBuffer, sizeof(tempPathBuffer));
+    const char* backupPath =
+        OotPsp_ResolveRootPath(OOT_PSP_SAVE_BACKUP_PATH, backupPathBuffer, sizeof(backupPathBuffer));
+    SceUID fd = sceIoOpen(tempPath, PSP_O_WRONLY | PSP_O_CREAT | PSP_O_TRUNC, 0777);
     const u8* in = sPspSram;
     size_t remaining = sizeof(sPspSram);
 
     if (fd < 0) {
-        printf("oot-psp save open failed path=%s err=%d\n", path, (int)fd);
+        printf("oot-psp save open failed path=%s err=%d\n", tempPath, (int)fd);
         return false;
     }
 
@@ -223,8 +233,9 @@ static s32 OotPsp_FlushSram(void) {
         int written = sceIoWrite(fd, in, chunk);
 
         if (written <= 0) {
-            printf("oot-psp save write failed path=%s written=%d\n", path, written);
+            printf("oot-psp save write failed path=%s written=%d\n", tempPath, written);
             sceIoClose(fd);
+            sceIoRemove(tempPath);
             return false;
         }
 
@@ -232,7 +243,21 @@ static s32 OotPsp_FlushSram(void) {
         remaining -= written;
     }
 
-    sceIoClose(fd);
+    if (sceIoClose(fd) < 0) {
+        printf("oot-psp save close failed path=%s\n", tempPath);
+        sceIoRemove(tempPath);
+        return false;
+    }
+
+    /* Only replace the live save once the new one is completely on the
+     * memory stick. sceIoRename does not overwrite, so rotate through a backup. */
+    sceIoRemove(backupPath);
+    sceIoRename(path, backupPath);
+    if (sceIoRename(tempPath, path) < 0) {
+        printf("oot-psp save rename failed path=%s\n", path);
+        sceIoRename(backupPath, path);
+        return false;
+    }
     return true;
 }
 
