@@ -28,6 +28,15 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install host build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          # The Makefile checks for MIPS binutils even when building the PSP target.
+          sudo apt-get install --yes --no-install-recommends \
+            binutils-mips-linux-gnu cmake curl make python3-venv xxd
+          mips-linux-gnu-ld --version
+
       - name: Install PSPDEV
         shell: bash
         run: |

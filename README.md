@@ -32,7 +32,8 @@ NTSC 1.0 (US) on pushes, pull requests, and manual **Run workflow** requests.
 It uses the pinned PSPDEV `v20261001` toolchain and the Media Engine library
 revision `f153f0de12d42377b4f7ecec7e328dd2f0e825bb` required by the VME audio
 mixer. Both downloads are verified with SHA-256 checksums. It builds without
-a ROM or an extraction tree.
+a ROM or an extraction tree. CI also installs the host MIPS binutils required
+by the Makefile's tool checks.
 
 Download `oot-psp-ntsc-1.0-<commit>.zip` from the successful run's **Artifacts**
 section under **Actions > PSP build**. Extract it and copy `OOT_PSP` into
