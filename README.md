@@ -25,6 +25,33 @@ the codebase can drastically change at any time. Also note that some parts of th
 
 This is a WIP **decompilation** of ***The Legend of Zelda: Ocarina of Time***. The purpose of the project is to recreate a source code base for the game from scratch, using information found inside the game along with static and/or dynamic analysis. **It is not producing a PC port.** For more information you can get in touch with the team on our [Discord server][discord].
 
+## PSP builds
+
+The [PSP build workflow](.github/workflows/psp-build.yml) runs `./psp.sh` for
+NTSC 1.0 (US) on pushes, pull requests, and manual **Run workflow** requests.
+It uses the pinned PSPDEV `v20261001` toolchain and the Media Engine library
+revision `f153f0de12d42377b4f7ecec7e328dd2f0e825bb` required by the VME audio
+mixer. Both downloads are verified with SHA-256 checksums. It builds without
+a ROM or an extraction tree.
+
+Download `oot-psp-ntsc-1.0-<commit>.zip` from the successful run's **Artifacts**
+section under **Actions > PSP build**. Extract it and copy `OOT_PSP` into
+`PSP/GAME` on your memory stick. The ZIP includes `EBOOT.PBP`,
+`Plugins/dvemgr.prx`, an empty `data` folder, and installation instructions.
+Add your own compressed, big-endian NTSC 1.0 ROM as `OOT_PSP/data/basrom.z64`
+(32 MiB, CRC32 `CD16C529`) before launching. The port creates its assets on
+first boot. See the [installation instructions](docs/psp-install.txt) for details.
+CI downloads remain available for 30 days.
+
+To create the same archive locally after building:
+
+```sh
+./psp.sh VERSION=ntsc-1.0 REGION=US
+python3 tools/package_psp.py build/psp-port/ntsc-1.0 build/oot-psp-ntsc-1.0.zip
+```
+
+## ROM builds
+
 It builds the following versions:
 
 | Name         | Build timestamp   | Description                               | MD5 hash of input ROM(s) |
