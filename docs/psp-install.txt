@@ -1,0 +1,52 @@
+OOT PSP installation
+
+1. Extract this archive and copy the OOT_PSP folder to PSP/GAME on your
+   PSP memory stick. Keep the Plugins and data folders beside EBOOT.PBP.
+
+2. Put your own big-endian, compressed NTSC 1.0 ROM in
+   PSP/GAME/OOT_PSP/data/basrom.z64. The ROM must be 32 MiB with CRC32 CD16C529.
+   The filename baserom.z64 is also accepted.
+
+3. Launch OOT PSP Port from the PSP Game menu. On first launch, wait for ROM
+   validation and asset conversion to finish. Later launches reuse the generated
+   data/segments/oot_psp_assets.bin file.
+
+Installed layout:
+
+PSP/GAME/OOT_PSP/
+    EBOOT.PBP
+    README.txt
+    Plugins/dvemgr.prx
+    data/basrom.z64       (add your own ROM)
+
+Plugins/dvemgr.prx enables TV output on supported PSP models. Open HOME >
+Video Settings to configure it. A PSP-1000 uses its LCD.
+
+To regenerate assets, delete data/segments/oot_psp_assets.bin and launch again
+with the ROM still present.
+
+The archive includes the compiled port and its DVE module. You supply the ROM;
+no ROM or converted game assets are included in this download.
+
+Media Engine support uses PSP Media Engine Custom Core by m-c/d (mcidclan):
+https://github.com/mcidclan/psp-media-engine-custom-core
+
+Copyright (c) 2025 m-c/d
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+this software and associated documentation files (the "Software"), to deal in
+the Software without restriction, including without limitation the rights to
+use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
+of the Software, and to permit persons to whom the Software is furnished to do
+so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
