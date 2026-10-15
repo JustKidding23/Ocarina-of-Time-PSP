@@ -1,4 +1,7 @@
 #include "array_count.h"
+#if PLATFORM_PSP
+#include "oot_psp_enhancements.h"
+#endif
 #include "attributes.h"
 #include "controller.h"
 #include "flag_set.h"
@@ -2320,6 +2323,11 @@ void Interface_SetNaviCall(PlayState* play, u16 naviCallState) {
 
     if (((naviCallState == 0x1D) || (naviCallState == 0x1E)) && !interfaceCtx->naviCalling &&
         (play->csCtx.state == CS_STATE_IDLE)) {
+#if PLATFORM_PSP
+        // "Quiet Navi" keeps the flashing C-Up prompt but drops the voice.
+        if (!OotPspEnhancements_IsEnabled(OOT_PSP_ENH_QUIET_NAVI))
+#endif
+        {
         // clang-format off
         if (naviCallState == 0x1E) { SFX_PLAY_CENTERED(NA_SE_VO_NAVY_CALL);
         }
@@ -2327,6 +2335,7 @@ void Interface_SetNaviCall(PlayState* play, u16 naviCallState) {
 
         if (naviCallState == 0x1D) {
             func_800F4524(&gSfxDefaultPos, NA_SE_VO_NA_HELLO_2, 32);
+        }
         }
 
         interfaceCtx->naviCalling = true;
@@ -3025,9 +3034,8 @@ void Interface_DrawItemButtons(PlayState* play) {
 
     if (!IS_PAUSE_STATE_GAMEOVER(pauseCtx)) {
         if (IS_PAUSED(&play->pauseCtx)) {
-#if PLATFORM_PSP
-            gOotPspSetHudAnchor(OVERLAY_DISP++, OOT_PSP_HUD_ANCHOR_NONE);
-#endif
+            // The START button sits in the same cluster as B/A/C, so it shares
+            // their right anchor and scales with them instead of overlapping.
             // Start Button Texture, Color & Label
             gDPPipeSync(OVERLAY_DISP++);
             gDPSetPrimColor(OVERLAY_DISP++, 0, 0, START_BUTTON_R, START_BUTTON_G, START_BUTTON_B,
@@ -3524,7 +3532,7 @@ void Interface_Draw(PlayState* play) {
 
         Magic_DrawMeter(play);
 #if PLATFORM_PSP
-        gOotPspSetHudAnchor(OVERLAY_DISP++, OOT_PSP_HUD_ANCHOR_RIGHT);
+        gOotPspSetHudAnchor(OVERLAY_DISP++, OOT_PSP_HUD_ANCHOR_RIGHT | OOT_PSP_HUD_ANCHOR_BOTTOM_FLAG);
 #endif
         Minimap_Draw(play);
 

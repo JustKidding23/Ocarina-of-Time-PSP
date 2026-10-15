@@ -174,6 +174,15 @@ static OotPspPinnedAssetWindowCache sOotPspPinnedAssetCaches[] = {
     { OOT_PSP_AUDIOBANK_ASSET_NAME, { NULL, NULL, 0, 0, 0, 0, false, false } },
     { OOT_PSP_AUDIOSEQ_ASSET_NAME, { NULL, NULL, 0, 0, 0, 0, false, false } },
     { OOT_PSP_DO_ACTION_ASSET_NAME, { NULL, NULL, 0, 0, 0, 0, false, false } },
+    /* The pause menu reads these in full every time it opens (about 720 KiB),
+     * which stalled on memory stick reads. Keep them resident; if there is not
+     * enough memory the cache marks itself failed and reads fall back to the
+     * memory stick as before. */
+    { "icon_item_static", { NULL, NULL, 0, 0, 0, 0, false, false } },
+    { "icon_item_nes_static", { NULL, NULL, 0, 0, 0, 0, false, false } },
+    { "icon_item_field_static", { NULL, NULL, 0, 0, 0, 0, false, false } },
+    { "icon_item_24_static", { NULL, NULL, 0, 0, 0, 0, false, false } },
+    { "icon_item_dungeon_static", { NULL, NULL, 0, 0, 0, 0, false, false } },
 };
 #define OOT_PSP_PINNED_ASSET_CACHE_COUNT (sizeof(sOotPspPinnedAssetCaches) / sizeof(sOotPspPinnedAssetCaches[0]))
 

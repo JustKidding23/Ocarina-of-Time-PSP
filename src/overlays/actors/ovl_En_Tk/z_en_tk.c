@@ -5,6 +5,9 @@
  */
 
 #include "z_en_tk.h"
+#if PLATFORM_PSP
+#include "oot_psp_enhancements.h"
+#endif
 
 #include "libc64/math64.h"
 #include "libc64/qrand.h"
@@ -618,6 +621,12 @@ void EnTk_Dig(EnTk* this, PlayState* play) {
             rewardPos.z += this->actor.world.pos.z;
 
             this->currentReward = EnTk_ChooseReward(this);
+#if PLATFORM_PSP
+            // Give the heart piece on the first valid dig instead of leaving it to luck.
+            if (OotPspEnhancements_IsEnabled(OOT_PSP_ENH_DAMPE_HEART) && !GET_ITEMGETINF(ITEMGETINF_1C)) {
+                this->currentReward = 3;
+            }
+#endif
             if (this->currentReward == 3) {
                 /*
                  * Upgrade the purple rupee reward to the heart piece if this

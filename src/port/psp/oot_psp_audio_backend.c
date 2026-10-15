@@ -2697,6 +2697,86 @@ static s32 OotPspAudioBackend_StartDiagnosticThread(void) {
 }
 #endif
 
+/* Waits up to `timeoutUsec` for `done()` to become true. */
+static s32 OotPspAudioBackend_WaitUntil(s32 (*done)(void), u32 timeoutUsec) {
+    u32 start = sceKernelGetSystemTimeLow();
+
+    while (!done()) {
+        if ((sceKernelGetSystemTimeLow() - start) >= timeoutUsec) {
+            return false;
+        }
+        sceKernelDelayThread(1000);
+    }
+    return true;
+}
+
+#if OOT_PSP_AUDIO_MEDIA_ENGINE
+static s32 OotPspAudioBackend_MeJobIdle(void) {
+    return !OotPspAudioBackend_MeJobIsRunning() && (sAudioMeState != OOT_PSP_AUDIO_ME_STATE_QUEUE_BUFFER);
+}
+
+static s32 OotPspAudioBackend_MeHalted(void) {
+    return sAudioMeState == OOT_PSP_AUDIO_ME_STATE_HALTED;
+}
+#endif
+
+/*
+ * Stops audio before the title exits. The Media Engine keeps running on its
+ * own and its completion interrupt points at this module's code; if either is
+ * still live when the system unloads the game, the PSP can lock up and power
+ * itself off. Safe to call more than once and from the exit callback.
+ */
+void OotPspAudioBackend_Shutdown(void) {
+    static volatile s32 sShutdownDone;
+    SceUInt timeout;
+
+    if (sShutdownDone) {
+        return;
+    }
+    sShutdownDone = true;
+
+    /* Stop the producer and output threads so nothing new is submitted. */
+    sAudioProducerThreadRunning = false;
+    sAudioOutputThreadRunning = false;
+    if (sAudioProducerThreadId >= 0) {
+        timeout = 200 * 1000;
+        if (sceKernelWaitThreadEnd(sAudioProducerThreadId, &timeout) < 0) {
+            sceKernelTerminateThread(sAudioProducerThreadId);
+        }
+    }
+    if (sAudioOutputThreadId >= 0) {
+        timeout = 200 * 1000;
+        if (sceKernelWaitThreadEnd(sAudioOutputThreadId, &timeout) < 0) {
+            sceKernelTerminateThread(sAudioOutputThreadId);
+        }
+    }
+
+#if OOT_PSP_AUDIO_MEDIA_ENGINE
+    if (sAudioMeBootStarted && (sAudioMeBootResult >= 0)) {
+        /* Let a job that is already running finish, then ask the ME loop to
+         * exit. It halts the ME core once it sees the stop state. */
+        (void)OotPspAudioBackend_WaitUntil(OotPspAudioBackend_MeJobIdle, 200 * 1000);
+        sAudioMeState = OOT_PSP_AUDIO_ME_STATE_STOP;
+        meLibSync();
+        (void)OotPspAudioBackend_WaitUntil(OotPspAudioBackend_MeHalted, 200 * 1000);
+    }
+    if (sAudioMeCompletionInterruptReady) {
+        sAudioMeCompletionInterruptEnabled = false;
+        sAudioMeCompletionInterruptReady = false;
+        sceKernelDisableSubIntr(PSP_MECODEC_INT, 0);
+        sceKernelReleaseSubIntrHandler(PSP_MECODEC_INT, 0);
+    }
+#endif
+
+    if (sAudioHardwareSrc) {
+        sceAudioSRCChRelease();
+        sAudioHardwareSrc = false;
+    } else if (sAudioOutputChannel >= 0) {
+        sceAudioChRelease(sAudioOutputChannel);
+        sAudioOutputChannel = -1;
+    }
+}
+
 static s32 OotPspAudioBackend_StartThreads(void) {
     SceUID threadId;
     s32 ret;

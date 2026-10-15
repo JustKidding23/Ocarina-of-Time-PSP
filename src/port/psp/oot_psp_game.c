@@ -62,6 +62,7 @@
 #include "z_game_dlftbls.h"
 #include "z_lib.h"
 #include "oot_psp_asset_loader.h"
+#include "oot_psp_enhancements.h"
 #include "oot_psp_rom_profiles.h"
 #include "oot_psp_audio_backend.h"
 #include "oot_psp_memory.h"
@@ -755,6 +756,7 @@ void SsSram_ReadWrite(s32 addr, void* dramAddr, size_t size, s32 direction) {
     } else {
         memcpy(&sPspSram[offset], dramAddr, size);
         OotPsp_FlushSram();
+        OotPspEnhancements_SaveSeenText();
     }
 }
 

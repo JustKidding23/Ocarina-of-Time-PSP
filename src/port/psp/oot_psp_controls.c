@@ -1,3 +1,4 @@
+#include <math.h>
 #include "oot_psp_controls.h"
 
 #include <pspctrl.h>
@@ -178,7 +179,7 @@ void OotPspControls_InitDefaults(void) {
         sButtonBindings[i].n64Mask = sButtonBindings[i].defaultN64Mask;
     }
 
-    sDeadzone = 0;
+    sDeadzone = OOT_PSP_CONTROLS_DEADZONE_DEFAULT;
     sN64StickScalingEnabled = true;
     sInitialized = true;
 }
@@ -346,34 +347,63 @@ u16 OotPspControls_MapButtons(u32 pspButtons) {
     return n64Buttons;
 }
 
-s8 OotPspControls_MapStick(u8 raw) {
-    s32 centered = (s32)raw - 128;
-    s32 magnitude;
+/* The game ignores N64 stick values of 7 or less on each axis
+ * (PadUtils_UpdateRelXY), so 8 is the smallest value it responds to. */
+#define OOT_PSP_N64_STICK_MIN_RESPONSE 8
+#define OOT_PSP_N64_STICK_MAX 80
+#define OOT_PSP_PSP_STICK_MAX 127.0f
+
+void OotPspControls_MapStick(u8 rawX, u8 rawY, s8* outX, s8* outY) {
+    const float x = (float)((s32)rawX - 128);
+    const float y = (float)((s32)rawY - 128);
+    float magnitude;
+    float scaled;
+    float outMagnitude;
+    s32 resultX;
+    s32 resultY;
 
     OotPspControls_EnsureInitialized();
 
-    if ((centered >= -sDeadzone) && (centered <= sDeadzone)) {
-        centered = 0;
+    *outX = 0;
+    *outY = 0;
+
+    /* Apply the deadzone to the stick's distance from centre rather than to
+     * each axis, and stretch the remaining travel so the response starts just
+     * past the deadzone. With per-axis deadzones stacked on the game's own,
+     * a PSP stick resting slightly off-centre still leaked a small input,
+     * which made Link turn endlessly with the camera. */
+    magnitude = sqrtf((x * x) + (y * y));
+    if (magnitude > OOT_PSP_PSP_STICK_MAX) {
+        magnitude = OOT_PSP_PSP_STICK_MAX;
+    }
+    if ((magnitude <= (float)sDeadzone) || (magnitude <= 0.0f)) {
+        return;
     }
 
+    scaled = (magnitude - (float)sDeadzone) / (OOT_PSP_PSP_STICK_MAX - (float)sDeadzone);
     if (sN64StickScalingEnabled) {
-        /* Use the PSP stick's full travel for the N64's usable -80..80 range. */
-        magnitude = (centered < 0) ? -centered : centered;
-        if (magnitude > 127) {
-            magnitude = 127;
-        }
-        magnitude = ((magnitude * 80) + 63) / 127;
-        centered = (centered < 0) ? -magnitude : magnitude;
+        /* Use the PSP stick's full travel for the N64's usable range. */
+        outMagnitude = OOT_PSP_N64_STICK_MIN_RESPONSE +
+                       (scaled * (OOT_PSP_N64_STICK_MAX - OOT_PSP_N64_STICK_MIN_RESPONSE));
+    } else {
+        outMagnitude = scaled * OOT_PSP_PSP_STICK_MAX;
     }
 
-    if (centered < -80) {
-        centered = -80;
+    resultX = (s32)((x * outMagnitude / magnitude) + ((x < 0.0f) ? -0.5f : 0.5f));
+    resultY = (s32)((y * outMagnitude / magnitude) + ((y < 0.0f) ? -0.5f : 0.5f));
+    if (resultX < -OOT_PSP_N64_STICK_MAX) {
+        resultX = -OOT_PSP_N64_STICK_MAX;
+    } else if (resultX > OOT_PSP_N64_STICK_MAX) {
+        resultX = OOT_PSP_N64_STICK_MAX;
     }
-    if (centered > 80) {
-        centered = 80;
+    if (resultY < -OOT_PSP_N64_STICK_MAX) {
+        resultY = -OOT_PSP_N64_STICK_MAX;
+    } else if (resultY > OOT_PSP_N64_STICK_MAX) {
+        resultY = OOT_PSP_N64_STICK_MAX;
     }
 
-    return centered;
+    *outX = resultX;
+    *outY = resultY;
 }
 
 int OotPspControls_GetBindingCount(void) {

@@ -1441,6 +1441,7 @@ PSP_PORT_RUNTIME_SOURCES := \
 	src/port/psp/oot_psp_audio_backend.c \
 	src/port/psp/oot_psp_audiomgr.c \
 	src/port/psp/oot_psp_controls.c \
+	src/port/psp/oot_psp_enhancements.c \
 	src/port/psp/oot_psp_dve.c \
 	src/port/psp/oot_psp_game.c \
 	src/port/psp/oot_psp_home_menu.c \

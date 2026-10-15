@@ -1035,8 +1035,14 @@ s32 osContStartReadData(UNUSED OSMesgQueue* mq) {
     sceCtrlPeekBufferPositive(&pad, 1);
 
     sControllerPads[0].button = OotPspControls_MapButtons(pad.Buttons);
-    sControllerPads[0].stick_x = OotPspControls_MapStick(pad.Lx);
-    sControllerPads[0].stick_y = -OotPspControls_MapStick(pad.Ly);
+    {
+        s8 stickX;
+        s8 stickY;
+
+        OotPspControls_MapStick(pad.Lx, pad.Ly, &stickX, &stickY);
+        sControllerPads[0].stick_x = stickX;
+        sControllerPads[0].stick_y = -stickY;
+    }
     sControllerPads[0].errno = 0;
 
     return 0;

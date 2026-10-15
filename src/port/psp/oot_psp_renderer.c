@@ -119,6 +119,12 @@ void OotPspRenderer_SetJpegBackgroundResolution(bool active, uint32_t width, uin
     gfx_set_dimensions(width, height);
 }
 
+float OotPspRenderer_GetHorizontalViewScale(void) {
+    extern float gfx_get_horizontal_view_scale(void);
+
+    return gfx_get_horizontal_view_scale();
+}
+
 void OotPspRenderer_RequestPauseBackground(void) {
     gfx_scegu_request_pause_background();
 }

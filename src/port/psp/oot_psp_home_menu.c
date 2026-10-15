@@ -9,20 +9,30 @@
 
 #include "color.h"
 #include "oot_psp_controls.h"
+#include "oot_psp_enhancements.h"
 #include "oot_psp_renderer.h"
 #include "oot_psp_video.h"
 
 #define OOT_PSP_HOME_MENU_ITEM_RESUME_GAME 0
 #define OOT_PSP_HOME_MENU_ITEM_CONTROLLER_MAPPING 1
 #define OOT_PSP_HOME_MENU_ITEM_VIDEO_SETTINGS 2
-#define OOT_PSP_HOME_MENU_ITEM_ABOUT 3
-#define OOT_PSP_HOME_MENU_ITEM_EXIT_GAME 4
-#define OOT_PSP_HOME_MENU_ITEM_COUNT 5
+#define OOT_PSP_HOME_MENU_ITEM_ENHANCEMENTS 3
+#define OOT_PSP_HOME_MENU_ITEM_ABOUT 4
+#define OOT_PSP_HOME_MENU_ITEM_EXIT_GAME 5
+#define OOT_PSP_HOME_MENU_ITEM_COUNT 6
 
 #define OOT_PSP_HOME_MENU_SCREEN_MAIN 0
 #define OOT_PSP_HOME_MENU_SCREEN_CONTROLLER_MAPPING 1
 #define OOT_PSP_HOME_MENU_SCREEN_VIDEO_SETTINGS 2
 #define OOT_PSP_HOME_MENU_SCREEN_ABOUT 3
+#define OOT_PSP_HOME_MENU_SCREEN_ENHANCEMENTS 4
+
+/* Enhancements screen: one row per toggle, then HUD size, Save, Reset, Back. */
+#define OOT_PSP_ENH_MENU_ROW_HUD_SCALE (OOT_PSP_ENH_COUNT)
+#define OOT_PSP_ENH_MENU_ROW_SAVE (OOT_PSP_ENH_COUNT + 1)
+#define OOT_PSP_ENH_MENU_ROW_RESET (OOT_PSP_ENH_COUNT + 2)
+#define OOT_PSP_ENH_MENU_ROW_BACK (OOT_PSP_ENH_COUNT + 3)
+#define OOT_PSP_ENH_MENU_ROW_COUNT (OOT_PSP_ENH_COUNT + 4)
 
 #define OOT_PSP_HOME_MENU_ABOUT_MAX_SCROLL 16
 
@@ -49,6 +59,7 @@ static int sSelectedIndex;
 static int sScreen;
 static int sControlSelectedIndex;
 static int sVideoSelectedIndex;
+static int sEnhancementsSelectedIndex;
 static int sAboutScrollOffset;
 static int sStatusTimer;
 static u32 sCurrentButtons;
@@ -75,6 +86,7 @@ static void OotPspHomeMenu_Open(void) {
     sScreen = OOT_PSP_HOME_MENU_SCREEN_MAIN;
     sControlSelectedIndex = 0;
     sVideoSelectedIndex = 0;
+    sEnhancementsSelectedIndex = 0;
     sAboutScrollOffset = 0;
     sStatusTimer = 0;
     sStatusMessage[0] = '\0';
@@ -225,6 +237,36 @@ static void OotPspHomeMenu_ActivateVideoRow(void) {
     }
 }
 
+static void OotPspHomeMenu_MoveEnhancementsSelection(int direction) {
+    sEnhancementsSelectedIndex += direction;
+    if (sEnhancementsSelectedIndex < 0) {
+        sEnhancementsSelectedIndex = OOT_PSP_ENH_MENU_ROW_COUNT - 1;
+    } else if (sEnhancementsSelectedIndex >= OOT_PSP_ENH_MENU_ROW_COUNT) {
+        sEnhancementsSelectedIndex = 0;
+    }
+}
+
+static void OotPspHomeMenu_AdjustEnhancementsRow(int direction) {
+    if (sEnhancementsSelectedIndex < OOT_PSP_ENH_COUNT) {
+        OotPspEnhancements_Toggle((OotPspEnhancement)sEnhancementsSelectedIndex);
+    } else if (sEnhancementsSelectedIndex == OOT_PSP_ENH_MENU_ROW_HUD_SCALE) {
+        OotPspEnhancements_CycleHudScale(direction);
+    }
+}
+
+static void OotPspHomeMenu_ActivateEnhancementsRow(void) {
+    if (sEnhancementsSelectedIndex <= OOT_PSP_ENH_MENU_ROW_HUD_SCALE) {
+        OotPspHomeMenu_AdjustEnhancementsRow(1);
+    } else if (sEnhancementsSelectedIndex == OOT_PSP_ENH_MENU_ROW_SAVE) {
+        OotPspHomeMenu_SetStatus((OotPspEnhancements_Save() == 0) ? "Saved enhancements.ini" : "Save failed");
+    } else if (sEnhancementsSelectedIndex == OOT_PSP_ENH_MENU_ROW_RESET) {
+        OotPspEnhancements_ResetDefaults();
+        OotPspHomeMenu_SetStatus((OotPspEnhancements_Save() == 0) ? "Defaults saved" : "Defaults restored");
+    } else if (sEnhancementsSelectedIndex == OOT_PSP_ENH_MENU_ROW_BACK) {
+        sScreen = OOT_PSP_HOME_MENU_SCREEN_MAIN;
+    }
+}
+
 void OotPspHomeMenu_Init(void) {
     sOpenRequested = false;
     sActive = false;
@@ -232,6 +274,7 @@ void OotPspHomeMenu_Init(void) {
     sScreen = OOT_PSP_HOME_MENU_SCREEN_MAIN;
     sControlSelectedIndex = 0;
     sVideoSelectedIndex = 0;
+    sEnhancementsSelectedIndex = 0;
     sAboutScrollOffset = 0;
     sStatusTimer = 0;
     sCurrentButtons = 0;
@@ -276,6 +319,8 @@ static void OotPspHomeMenu_Render(const char* statusMessage, const Color_RGB8* t
         submenuSelectedIndex = sVideoSelectedIndex;
     } else if (sScreen == OOT_PSP_HOME_MENU_SCREEN_ABOUT) {
         submenuSelectedIndex = sAboutScrollOffset;
+    } else if (sScreen == OOT_PSP_HOME_MENU_SCREEN_ENHANCEMENTS) {
+        submenuSelectedIndex = sEnhancementsSelectedIndex;
     }
 
     OotPspRenderer_RenderHomeMenu(sSelectedIndex, sScreen, submenuSelectedIndex,
@@ -367,6 +412,20 @@ OotPspHomeMenuResult OotPspHomeMenu_RunFrame(const Color_RGB8* tunicColor) {
         } else if (pressed & (PSP_CTRL_CROSS | PSP_CTRL_START)) {
             OotPspHomeMenu_ActivateVideoRow();
         }
+    } else if (sScreen == OOT_PSP_HOME_MENU_SCREEN_ENHANCEMENTS) {
+        if (pressed & PSP_CTRL_CIRCLE) {
+            sScreen = OOT_PSP_HOME_MENU_SCREEN_MAIN;
+        } else if (pressed & PSP_CTRL_UP) {
+            OotPspHomeMenu_MoveEnhancementsSelection(-1);
+        } else if (pressed & PSP_CTRL_DOWN) {
+            OotPspHomeMenu_MoveEnhancementsSelection(1);
+        } else if (pressed & PSP_CTRL_LEFT) {
+            OotPspHomeMenu_AdjustEnhancementsRow(-1);
+        } else if (pressed & PSP_CTRL_RIGHT) {
+            OotPspHomeMenu_AdjustEnhancementsRow(1);
+        } else if (pressed & (PSP_CTRL_CROSS | PSP_CTRL_START)) {
+            OotPspHomeMenu_ActivateEnhancementsRow();
+        }
     } else if (sScreen == OOT_PSP_HOME_MENU_SCREEN_ABOUT) {
         if (pressed & (PSP_CTRL_CIRCLE | PSP_CTRL_CROSS | PSP_CTRL_START)) {
             sScreen = OOT_PSP_HOME_MENU_SCREEN_MAIN;
@@ -393,6 +452,9 @@ OotPspHomeMenuResult OotPspHomeMenu_RunFrame(const Color_RGB8* tunicColor) {
                 OotPspVideo_RefreshTvAvailability();
                 sScreen = OOT_PSP_HOME_MENU_SCREEN_VIDEO_SETTINGS;
                 sVideoSelectedIndex = 0;
+            } else if (sSelectedIndex == OOT_PSP_HOME_MENU_ITEM_ENHANCEMENTS) {
+                sScreen = OOT_PSP_HOME_MENU_SCREEN_ENHANCEMENTS;
+                sEnhancementsSelectedIndex = 0;
             } else if (sSelectedIndex == OOT_PSP_HOME_MENU_ITEM_ABOUT) {
                 sScreen = OOT_PSP_HOME_MENU_SCREEN_ABOUT;
                 sAboutScrollOffset = 0;

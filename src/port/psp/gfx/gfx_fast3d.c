@@ -1,4 +1,5 @@
 #include <math.h>
+#include "oot_psp_enhancements.h"
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -239,6 +240,24 @@ typedef struct TextureTileState {
     uint32_t line_size_bytes;
 } TextureTileState;
 
+/*
+ * N64 clamping is applied at the tile edge (SetTileSize) before the mask and
+ * mirror. If a clamped axis' tile is no larger than one mask period, the
+ * mirrored half can never be sampled: the edge texel is stretched instead.
+ * Epona's head uses mirror+clamp this way; treating it as mirrored drew a
+ * second, mirrored pair of eyes under the real ones.
+ */
+static inline uint8_t gfx_effective_cm(uint8_t cm, uint8_t mask, uint16_t ul, uint16_t lr) {
+    if ((cm & G_TX_CLAMP) && (cm & G_TX_MIRROR) && (mask != G_TX_NOMASK)) {
+        const uint32_t tileTexels = ((uint32_t)(uint16_t)(lr - ul) >> 2) + 1;
+
+        if (tileTexels <= (1U << mask)) {
+            return cm & ~G_TX_MIRROR;
+        }
+    }
+    return cm;
+}
+
 static struct RSP {
     float modelview_matrix_stack[MODELVIEW_STACK_SIZE][4][4]__attribute__((aligned(16)));
 
@@ -339,6 +358,8 @@ static struct RenderingState {
     struct TriPipelineState tri_pipeline;
 } rendering_state __attribute__((aligned(16)));
 
+static inline __attribute__((always_inline)) void gfx_apply_projection_matrix(void);
+
 struct GfxDimensions gfx_current_dimensions __attribute__((aligned(4)));
 
 static inline TextureTileState* gfx_get_texture_tile(int tile) {
@@ -363,6 +384,13 @@ static bool dropped_frame;
 static const struct RGBA white_color = {0xff, 0xff, 0xff, 0xff};
 static OotPspHudAnchor sHudAnchor;
 static bool sHudViewportFullscreen = true;
+/* The current HUD element is anchored to the bottom edge (see OOT_PSP_HUD_ANCHOR_BOTTOM_FLAG). */
+static bool sHudAnchorBottom;
+
+/* HUD size from the Enhancements menu, applied to anchored HUD elements. */
+static float gfx_hud_scale(void) {
+    return (float)OotPspEnhancements_GetHudScalePercent() / 100.0f;
+}
 static float sNdcAspectScale = 1.0f;
 static float sWidescreenMarginPixels;
 static float sHudAnchorOffsetPixels;
@@ -1176,8 +1204,12 @@ static void gfx_upload_texture_slow(int tile, const uint8_t *buf, uint32_t width
 static inline __attribute__((always_inline)) void gfx_upload_texture(int tile, const uint8_t *buf, uint32_t width,
                                                                      uint32_t height, unsigned int type) {
     const TextureTileState* tileState = gfx_get_texture_tile(tile);
-    const bool mirror_s = (tileState->cms & G_TX_MIRROR) != 0 && tileState->masks != G_TX_NOMASK;
-    const bool mirror_t = (tileState->cmt & G_TX_MIRROR) != 0 && tileState->maskt != G_TX_NOMASK;
+    const bool mirror_s =
+        (gfx_effective_cm(tileState->cms, tileState->masks, tileState->uls, tileState->lrs) & G_TX_MIRROR) != 0 &&
+        tileState->masks != G_TX_NOMASK;
+    const bool mirror_t =
+        (gfx_effective_cm(tileState->cmt, tileState->maskt, tileState->ult, tileState->lrt) & G_TX_MIRROR) != 0 &&
+        tileState->maskt != G_TX_NOMASK;
 
 #if defined(TARGET_PSP) && defined(OOTDEBUG)
     sPerformanceTextureUploadCount++;
@@ -1292,7 +1324,26 @@ void gfx_clip_interpolate_vert(struct LoadedVertex* out, const struct  LoadedVer
 //	Copyright (C) 2002-2006 Nikolaus Gebhardt/Alten Thomas
 //
 //*****************************************************************************
-static const float NDCPlane[6][4] __attribute__((aligned(16))) =
+/* X/Y are clipped against a guard band outside the screen and the GE scissor
+ * makes the exact cut at the screen edge. Clipping exactly at the edge could
+ * land a fraction of a pixel inside it and leave a 1-pixel gap that flickered
+ * as the camera moved. The GE accepts screen coordinates up to about 7x the
+ * half-width from the centre, so 2x is well within range. Near/far stay exact.
+ * Pillarboxed 4:3 pictures (prerendered rooms) keep exact clipping: geometry
+ * there spilled into the margins with the guard band. */
+#define GFX_CLIP_GUARD_BAND 2.0f
+
+static const float NDCPlaneGuard[6][4] __attribute__((aligned(16))) =
+{
+	{  0.f,  0.f,  1.f, -1.f },	// near
+	{  1.f,  0.f,  0.f, -GFX_CLIP_GUARD_BAND },	// left
+	{ -1.f,  0.f,  0.f, -GFX_CLIP_GUARD_BAND },	// right
+	{  0.f,  1.f,  0.f, -GFX_CLIP_GUARD_BAND },	// bottom
+	{  0.f, -1.f,  0.f, -GFX_CLIP_GUARD_BAND },	// top
+	{  0.f,  0.f, -1.f, -1.f }	// far
+};
+
+static const float NDCPlaneExact[6][4] __attribute__((aligned(16))) =
 {
 	{  0.f,  0.f,  1.f, -1.f },	// near
 	{  1.f,  0.f,  0.f, -1.f },	// left
@@ -1398,6 +1449,9 @@ static uint32_t clip_to_frustum(struct LoadedVertex* v0, struct LoadedVertex* v1
             }                                                      \
         }                                                          \
     } while (0)
+
+    const float (*NDCPlane)[4] =
+        (gfx_current_dimensions.width >= 480) ? NDCPlaneGuard : NDCPlaneExact;
 
     CLIP_TO_PLANE_IF_NEEDED(X_POS, NDCPlane[2]); // right
     CLIP_TO_PLANE_IF_NEEDED(X_NEG, NDCPlane[1]); // left
@@ -1984,8 +2038,12 @@ static bool gfx_texture_cache_lookup(int tile, struct TextureHashmapNode **n, co
     const bool uses_palette = fmt == G_IM_FMT_CI;
     const uint8_t* palette_addr = uses_palette ? rdp.palette : NULL;
     const uint32_t palette_key = uses_palette ? rdp.palette_key : 0;
-    const uint8_t mirror_s = (tileState->cms & G_TX_MIRROR) != 0 && tileState->masks != G_TX_NOMASK;
-    const uint8_t mirror_t = (tileState->cmt & G_TX_MIRROR) != 0 && tileState->maskt != G_TX_NOMASK;
+    const uint8_t mirror_s =
+        (gfx_effective_cm(tileState->cms, tileState->masks, tileState->uls, tileState->lrs) & G_TX_MIRROR) != 0 &&
+        tileState->masks != G_TX_NOMASK;
+    const uint8_t mirror_t =
+        (gfx_effective_cm(tileState->cmt, tileState->maskt, tileState->ult, tileState->lrt) & G_TX_MIRROR) != 0 &&
+        tileState->maskt != G_TX_NOMASK;
 
     hash ^= (size_t)source_key * 2654435761U;
     hash ^= (size_t)palette_addr >> 4;
@@ -3633,19 +3691,53 @@ static bool gfx_hud_anchor_enabled(void);
 
 static inline __attribute__((always_inline)) void gfx_apply_projection_matrix(void) {
     float projection[4][4];
-
-    if (!gfx_hud_anchor_enabled() || !sHudViewportFullscreen) {
-        gfx_upload_projection_matrix(rsp.P_matrix);
-        return;
-    }
+    /* The game folds the camera rotation into the projection, so the w column
+     * of a perspective matrix can have its non-zero entry in any of the first
+     * three rows (e.g. [2][3] is 0 when looking along the X axis). An
+     * orthographic matrix has (0, 0, 0, w) there. */
+    const bool perspective =
+        (rsp.P_matrix[0][3] != 0.0f) || (rsp.P_matrix[1][3] != 0.0f) || (rsp.P_matrix[2][3] != 0.0f);
 
     memcpy(projection, rsp.P_matrix, sizeof(projection));
-    {
+    if (!gfx_hud_anchor_enabled() || !sHudViewportFullscreen) {
+        /* The game builds its perspective projections for a 4:3 picture.
+         * Scale clip-space X so the 3D view keeps its proportions on a wider
+         * display and shows more to the sides, instead of being stretched.
+         * Orthographic projections (fades, full-screen overlays) are left
+         * alone so they still cover the whole screen. */
+        /* HUD elements with their own small viewport (the A button) are
+         * already sized for the screen, so only correct unanchored views. */
+        if ((sNdcAspectScale != 1.0f) && perspective && !gfx_hud_anchor_enabled()) {
+            for (size_t i = 0; i < 4; i++) {
+                projection[i][0] *= sNdcAspectScale;
+            }
+        }
+    } else {
         for (size_t i = 0; i < 4; i++) {
             projection[i][0] = (projection[i][0] * sNdcAspectScale) +
                                (projection[i][3] * sHudAnchorOffsetNdc);
         }
+        /* Enlarge HUD elements around the screen edge they are anchored to:
+         * x = a + s * (x - a) in NDC, per clip column. This holds for the A
+         * button's perspective flip as well. The centre anchor is only used
+         * for the 3D Z-target arrows in the world, which are left alone. */
+        if (sHudAnchor != OOT_PSP_HUD_ANCHOR_CENTER) {
+            const float scale = gfx_hud_scale();
+
+            if (scale != 1.0f) {
+                const float anchorX = (sHudAnchor == OOT_PSP_HUD_ANCHOR_LEFT)
+                                          ? -1.0f
+                                          : ((sHudAnchor == OOT_PSP_HUD_ANCHOR_RIGHT) ? 1.0f : 0.0f);
+                const float anchorY = sHudAnchorBottom ? -1.0f : 1.0f;
+
+                for (size_t i = 0; i < 4; i++) {
+                    projection[i][0] = (scale * projection[i][0]) + ((1.0f - scale) * anchorX * projection[i][3]);
+                    projection[i][1] = (scale * projection[i][1]) + ((1.0f - scale) * anchorY * projection[i][3]);
+                }
+            }
+        }
     }
+
 
     gfx_upload_projection_matrix(projection);
 }
@@ -3728,6 +3820,11 @@ static void gfx_sp_pop_matrix(uint32_t count) {
 
 static float gfx_adjust_x_for_aspect_ratio(float x) {
     return x * sNdcAspectScale;
+}
+
+/* How much wider than the game's 4:3 view the 3D view currently is. */
+float gfx_get_horizontal_view_scale(void) {
+    return (sNdcAspectScale > 0.0f) ? (1.0f / sNdcAspectScale) : 1.0f;
 }
 
 static float gfx_hud_anchor_direction(void) {
@@ -4036,6 +4133,101 @@ static inline __attribute__((always_inline)) float gfx_triangle_cross_homogeneou
 #define GFX_TRI_INDEX_DIVISOR 10
 #endif
 
+/*
+ * N64 decal mode (ZMODE_DEC) passes the depth test when the new depth is within
+ * the surface's per-pixel depth slope of the stored one, so roads and paths
+ * stay on the ground even when seen at a shallow angle. The GE only has a
+ * constant depth offset, so the ground poked through decals, most visibly at
+ * shallow angles where the slope is large. Emulate the slope rule: measure each
+ * decal triangle's depth slope on screen and move its vertices towards the
+ * camera by that much depth. Moving a point along its line of sight keeps its
+ * screen position.
+ */
+#define GFX_DECAL_BIAS_BASE 16.0f   /* window depth units, on top of the GE offset */
+#define GFX_DECAL_BIAS_SLOPES 4.0f  /* how many pixels' worth of depth slope */
+#define GFX_DECAL_BIAS_MAX 16384.0f
+#define GFX_DEPTH_HALF_RANGE 32767.5f
+
+static bool sDecalEyeValid;
+static float sDecalEyeMatrix[4][4];
+static float sDecalEye[3];
+static float sDecalDepthTerm; /* d in z_c = c * z_eye + d */
+
+/* The game folds the view into the projection, so recover the camera position
+ * (where clip x, y and w are all zero) and the depth term from the matrix. */
+static bool gfx_decal_update_eye(void) {
+    const float (*m)[4] = rsp.P_matrix;
+    size_t row = 0;
+    float det;
+
+    if (sDecalEyeValid && (memcmp(sDecalEyeMatrix, m, sizeof(sDecalEyeMatrix)) == 0)) {
+        return true;
+    }
+    memcpy(sDecalEyeMatrix, m, sizeof(sDecalEyeMatrix));
+    sDecalEyeValid = false;
+
+    /* Solve x*m[0][j] + y*m[1][j] + z*m[2][j] = -m[3][j] for j = 0, 1, 3. */
+    {
+        const float a00 = m[0][0], a01 = m[1][0], a02 = m[2][0], b0 = -m[3][0];
+        const float a10 = m[0][1], a11 = m[1][1], a12 = m[2][1], b1 = -m[3][1];
+        const float a20 = m[0][3], a21 = m[1][3], a22 = m[2][3], b2 = -m[3][3];
+
+        det = a00 * (a11 * a22 - a12 * a21) - a01 * (a10 * a22 - a12 * a20) + a02 * (a10 * a21 - a11 * a20);
+        if (fabsf(det) < 1e-12f) {
+            return false;
+        }
+        sDecalEye[0] = (b0 * (a11 * a22 - a12 * a21) - a01 * (b1 * a22 - a12 * b2) + a02 * (b1 * a21 - a11 * b2)) / det;
+        sDecalEye[1] = (a00 * (b1 * a22 - a12 * b2) - b0 * (a10 * a22 - a12 * a20) + a02 * (a10 * b2 - b1 * a20)) / det;
+        sDecalEye[2] = (a00 * (a11 * b2 - b1 * a21) - a01 * (a10 * b2 - b1 * a20) + b0 * (a10 * a21 - a11 * a20)) / det;
+    }
+
+    for (size_t i = 1; i < 3; i++) {
+        if (fabsf(m[i][3]) > fabsf(m[row][3])) {
+            row = i;
+        }
+    }
+    if (m[row][3] == 0.0f) {
+        return false;
+    }
+    sDecalDepthTerm = m[3][2] + ((-m[row][2] / m[row][3]) * m[3][3]);
+    if (fabsf(sDecalDepthTerm) < 1e-6f) {
+        return false;
+    }
+    sDecalEyeValid = true;
+    return true;
+}
+
+/* Depth bias for one decal triangle, in window depth units. */
+static float gfx_decal_bias(const struct LoadedVertex* v1, const struct LoadedVertex* v2,
+                            const struct LoadedVertex* v3) {
+    float sx[3], sy[3], sz[3];
+    const struct LoadedVertex* v[3] = { v1, v2, v3 };
+    float bias = GFX_DECAL_BIAS_BASE;
+
+    for (int i = 0; i < 3; i++) {
+        if (v[i]->_w <= 0.0f) {
+            return bias;
+        }
+        sx[i] = v[i]->_x / v[i]->_w * (gfx_current_dimensions.width * 0.5f);
+        sy[i] = v[i]->_y / v[i]->_w * (gfx_current_dimensions.height * 0.5f);
+        sz[i] = v[i]->_z / v[i]->_w * GFX_DEPTH_HALF_RANGE;
+    }
+    {
+        const float e1x = sx[1] - sx[0], e1y = sy[1] - sy[0], e1z = sz[1] - sz[0];
+        const float e2x = sx[2] - sx[0], e2y = sy[2] - sy[0], e2z = sz[2] - sz[0];
+        const float nx = (e1y * e2z) - (e1z * e2y);
+        const float ny = (e1z * e2x) - (e1x * e2z);
+        const float nz = (e1x * e2y) - (e1y * e2x);
+
+        if (fabsf(nz) > 1e-6f) {
+            bias += GFX_DECAL_BIAS_SLOPES * ((fabsf(nx) + fabsf(ny)) / fabsf(nz));
+        } else {
+            bias = GFX_DECAL_BIAS_MAX;
+        }
+    }
+    return (bias > GFX_DECAL_BIAS_MAX) ? GFX_DECAL_BIAS_MAX : bias;
+}
+
 static void gfx_sp_triangles(uint32_t packed0, uint32_t packed1, uint8_t triangleCount) {
     /* Most model geometry uses G_TRI2. Keep both triangles in one handler invocation so the PSP pays the large
      * clip/material setup prologue once per command while retaining independent culling and clipping. */
@@ -4173,14 +4365,28 @@ static void gfx_sp_triangles(uint32_t packed0, uint32_t packed1, uint8_t triangl
         gfx_flush();
     }
 
+    const bool decalBias = rendering_state.decal_mode && gfx_decal_update_eye();
+    const float decalBiasScale =
+        decalBias ? (gfx_decal_bias(v_arr[0], v_arr[1], v_arr[2]) / (GFX_DEPTH_HALF_RANGE * fabsf(sDecalDepthTerm)))
+                  : 0.0f;
+
     size_t i;
     for (i = 0; i < clipped_vertices_num; i++) {
         const struct LoadedVertex *vertex = clipped_vertices[i];
         psp_fast_t *out = &buf_vbo[buf_num_vert];
 
-        out->x = vertex->x;
-        out->y = vertex->y;
-        out->z = vertex->z;
+        if (decalBias && (vertex->_w > 0.0f)) {
+            /* Scale towards the camera so the depth moves by the bias. */
+            const float pull = 1.0f / (1.0f + (decalBiasScale * vertex->_w));
+
+            out->x = sDecalEye[0] + ((vertex->x - sDecalEye[0]) * pull);
+            out->y = sDecalEye[1] + ((vertex->y - sDecalEye[1]) * pull);
+            out->z = sDecalEye[2] + ((vertex->z - sDecalEye[2]) * pull);
+        } else {
+            out->x = vertex->x;
+            out->y = vertex->y;
+            out->z = vertex->z;
+        }
         
         if (use_texture) {
             out->u = vertex->u * tex_u_scale[0] + tex_u_bias[0];
@@ -4534,6 +4740,24 @@ static void gfx_calc_and_set_viewport(const Vp_t *viewport) {
     }
     height *= RATIO_Y;
     y *= RATIO_Y;
+
+    /* HUD elements drawn into their own small viewport (the A button) are
+     * enlarged around their anchored screen edge like the rest of the HUD.
+     * Viewport y counts up from the bottom of the screen. */
+    if (gfx_hud_anchor_enabled() && !sHudViewportFullscreen && (sHudAnchor != OOT_PSP_HUD_ANCHOR_CENTER)) {
+        const float scale = gfx_hud_scale();
+
+        if (scale != 1.0f) {
+            const float anchorX = (sHudAnchor == OOT_PSP_HUD_ANCHOR_LEFT) ? 0.0f
+                                                                          : (float)gfx_current_dimensions.width;
+            const float anchorY = sHudAnchorBottom ? 0.0f : (float)gfx_current_dimensions.height;
+
+            x = anchorX + ((x - anchorX) * scale);
+            y = anchorY + ((y - anchorY) * scale);
+            width *= scale;
+            height *= scale;
+        }
+    }
     
     rdp.viewport.x = x;
     rdp.viewport.y = y;
@@ -4642,6 +4866,29 @@ static void gfx_dp_set_scissor(uint32_t mode, uint32_t ulx, uint32_t uly, uint32
     float y = (SCREEN_HEIGHT - lry / 4.0f) * RATIO_Y;
     float width = (lrx - ulx) / 4.0f * RATIO_X;
     float height = (lry - uly) / 4.0f * RATIO_Y;
+    const bool fullScreen = (ulx == 0) && (uly == 0) && (lrx >= (SCREEN_WIDTH << 2)) && (lry >= (SCREEN_HEIGHT << 2));
+
+    /* HUD views (the A button) set the scissor to their own viewport. Place it
+     * exactly like the anchored viewport in gfx_calc_and_set_viewport, or the
+     * moved and enlarged button is clipped. */
+    if (gfx_hud_anchor_enabled() && !fullScreen) {
+        x = (ulx / 4.0f * RATIO_Y) + gfx_widescreen_margin_pixels() + gfx_hud_anchor_offset_pixels();
+        width = (lrx - ulx) / 4.0f * RATIO_Y;
+        if (sHudAnchor != OOT_PSP_HUD_ANCHOR_CENTER) {
+            const float scale = gfx_hud_scale();
+
+            if (scale != 1.0f) {
+                const float anchorX = (sHudAnchor == OOT_PSP_HUD_ANCHOR_LEFT) ? 0.0f
+                                                                              : (float)gfx_current_dimensions.width;
+                const float anchorY = sHudAnchorBottom ? 0.0f : (float)gfx_current_dimensions.height;
+
+                x = anchorX + ((x - anchorX) * scale);
+                y = anchorY + ((y - anchorY) * scale);
+                width *= scale;
+                height *= scale;
+            }
+        }
+    }
     
     struct XYWidthHeight scissor = { x, y, width, height };
 
@@ -5535,6 +5782,28 @@ static void gfx_draw_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int32_t lr
 
         ulyf = (ulyf * halfHeight) + halfHeight;
         lryf = (lryf * halfHeight) + halfHeight;
+
+        /* Enlarge anchored HUD rectangles around their screen edge: the left or
+         * right edge from the anchor, and the top or bottom edge depending on
+         * which half of the screen the element is in. */
+        if (gfx_hud_anchor_enabled() && !force_full_width) {
+            const float scale = gfx_hud_scale();
+
+            if (scale != 1.0f) {
+                const float width = (float)gfx_current_dimensions.width;
+                const float height = (float)gfx_current_dimensions.height;
+                const float anchorX = (sHudAnchor == OOT_PSP_HUD_ANCHOR_LEFT)
+                                          ? 0.0f
+                                          : ((sHudAnchor == OOT_PSP_HUD_ANCHOR_RIGHT) ? width : width * 0.5f);
+                const float anchorY =
+                    (sHudAnchorBottom || (((ulyf + lryf) * 0.5f) > (height * 0.5f))) ? height : 0.0f;
+
+                ulxf = anchorX + ((ulxf - anchorX) * scale);
+                lrxf = anchorX + ((lrxf - anchorX) * scale);
+                ulyf = anchorY + ((ulyf - anchorY) * scale);
+                lryf = anchorY + ((lryf - anchorY) * scale);
+            }
+        }
     }
     
     struct VertexColor* ul = &rsp.loaded_vertices_2D[0];
@@ -5695,12 +5964,12 @@ static void gfx_dp_texture_rectangle(int32_t ulx, int32_t uly, int32_t lrx, int3
         const TextureTileState* tileState = gfx_get_texture_tile(0);
         GfxRectAxisSegment xSegments[3];
         GfxRectAxisSegment ySegments[3];
-        const int xCount = gfx_split_clamped_mirror_axis(ulx, lrx, uls, lrs, tileState->uls,
-                                                         tileState->masks, tileState->shifts,
-                                                         tileState->cms, xSegments);
-        const int yCount = gfx_split_clamped_mirror_axis(uly, lry, ult, lrt, tileState->ult,
-                                                         tileState->maskt, tileState->shiftt,
-                                                         tileState->cmt, ySegments);
+        const int xCount = gfx_split_clamped_mirror_axis(
+            ulx, lrx, uls, lrs, tileState->uls, tileState->masks, tileState->shifts,
+            gfx_effective_cm(tileState->cms, tileState->masks, tileState->uls, tileState->lrs), xSegments);
+        const int yCount = gfx_split_clamped_mirror_axis(
+            uly, lry, ult, lrt, tileState->ult, tileState->maskt, tileState->shiftt,
+            gfx_effective_cm(tileState->cmt, tileState->maskt, tileState->ult, tileState->lrt), ySegments);
         const bool coversScreenWidth = (ulx <= 0) && (lrx >= (SCREEN_WIDTH << 2));
         const float screenScale = RATIO_Y != 0.0f ? RATIO_Y : 1.0f;
         const int32_t leftExtension =
@@ -5845,11 +6114,13 @@ static void gfx_dp_noop(uint32_t tag) {
     }
 
     if ((tag & 0xFFFFFF00U) == OOT_PSP_HUD_ANCHOR_TAG) {
-        OotPspHudAnchor anchor = tag & 0xFF;
+        OotPspHudAnchor anchor = tag & 0x0F;
+        const bool bottom = (tag & OOT_PSP_HUD_ANCHOR_BOTTOM_FLAG) != 0;
 
-        if ((anchor <= OOT_PSP_HUD_ANCHOR_RIGHT) && (anchor != sHudAnchor)) {
+        if ((anchor <= OOT_PSP_HUD_ANCHOR_RIGHT) && ((anchor != sHudAnchor) || (bottom != sHudAnchorBottom))) {
             gfx_flush();
             sHudAnchor = anchor;
+            sHudAnchorBottom = bottom;
             gfx_update_screen_metrics();
             gfx_apply_projection_matrix();
         }
@@ -7061,6 +7332,7 @@ static void gfx_sp_reset() {
     rsp.lights_changed = true;
     rsp.rdp_half_1 = 0;
     sHudAnchor = OOT_PSP_HUD_ANCHOR_NONE;
+    sHudAnchorBottom = false;
     sHudViewportFullscreen = true;
     gfx_update_screen_metrics();
     memset(rsp.segments, 0, sizeof(rsp.segments));
@@ -7086,6 +7358,10 @@ void gfx_set_dimensions(uint32_t width, uint32_t height) {
     gfx_current_dimensions.height = height;
     gfx_update_screen_metrics();
     gfx_rapi->on_resize();
+    /* The picture origin moved, so resend the viewport and scissor. */
+    rdp.viewport_or_scissor_changed = true;
+    rendering_state.backend_state_dirty = true;
+    gfx_mark_tri_pipeline_dirty();
 }
 
 

@@ -5,6 +5,9 @@
  */
 
 #include "libu64/gfxprint.h"
+#if PLATFORM_PSP
+#include "oot_psp_enhancements.h"
+#endif
 #if PLATFORM_N64
 #include "cic6105.h"
 #include "n64dd.h"
@@ -321,6 +324,11 @@ void ConsoleLogo_Main(GameState* thisx) {
 
 #if PLATFORM_IQUE
     this->exit = true;
+#endif
+#if PLATFORM_PSP
+    if (OotPspEnhancements_IsEnabled(OOT_PSP_ENH_SKIP_LOGO)) {
+        this->exit = true;
+    }
 #endif
 
     if (this->exit) {

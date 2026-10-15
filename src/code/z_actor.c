@@ -5,6 +5,9 @@
 #include "gfx.h"
 #include "gfx_setupdl.h"
 #include "printf.h"
+#if defined(TARGET_PSP)
+#include "oot_psp_renderer.h"
+#endif
 #include "quake.h"
 #include "rand.h"
 #include "regs.h"
@@ -809,6 +812,17 @@ void TitleCard_InitPlaceName(PlayState* play, TitleCardContext* titleCtx, void* 
                              s32 height, s32 delay) {
     SceneTableEntry* loadedScene = play->loadedScene;
     u32 size = loadedScene->titleFile.vromEnd - loadedScene->titleFile.vromStart;
+
+#if defined(TARGET_PSP)
+    // The PSP asset pack pads every place-name file to four language slots
+    // (0x3600 bytes), which is more than `giObjectSegment` holds, so the check
+    // below skipped the load and the card drew whatever was left in the
+    // buffer. This version's images are at the start of the file, so copy
+    // only what fits.
+    if (size > 0x1000 * LANGUAGE_MAX) {
+        size = 0x1000 * LANGUAGE_MAX;
+    }
+#endif
 
     if ((size != 0) && (size <= 0x1000 * LANGUAGE_MAX)) {
         DMA_REQUEST_SYNC(texture, loadedScene->titleFile.vromStart, size, "../z_actor.c", 2765);
@@ -2892,7 +2906,14 @@ s32 Actor_CullingVolumeTest(PlayState* play, Actor* actor, Vec3f* projPos, f32 p
         // a frustum shape in front of the camera and a box shape behind the camera.
         invW = (projW < 1.0f) ? 1.0f : 1.0f / (f32)projW;
 
+#if defined(TARGET_PSP)
+        // The widescreen view shows more to the sides than the game's 4:3
+        // projection, so widen the horizontal bound to match or actors pop
+        // in and out at the screen edges.
+        if ((((fabsf(projPos->x) - actor->cullingVolumeScale) * invW) < OotPspRenderer_GetHorizontalViewScale()) &&
+#else
         if ((((fabsf(projPos->x) - actor->cullingVolumeScale) * invW) < 1.0f) &&
+#endif
             (((projPos->y + actor->cullingVolumeDownward) * invW) > -1.0f) &&
             (((projPos->y - actor->cullingVolumeScale) * invW) < 1.0f)) {
             return true;

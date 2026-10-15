@@ -1,7 +1,70 @@
-<!-- PSP build and download entry points -->
-[PSP build instructions](docs/psp-first-boot-assets.md) ·
-[Nightly downloads](https://github.com/z2442/oot-PSP/releases) ·
-[Build status](https://github.com/z2442/oot-PSP/actions/workflows/psp.yml)
+# Ocarina of Time PSP
+
+The Legend of Zelda: Ocarina of Time running natively on the Sony PSP (not
+emulated). This is a fork of [z2442/oot-PSP](https://github.com/z2442/oot-PSP),
+which is built on the [zeldaret/oot](https://github.com/zeldaret/oot)
+decompilation, with fixes and enhancements on top. It's tested on a PSP 3001
+with custom firmware and an NTSC 1.1 (US) ROM. The work is on the `psp3001`
+branch.
+
+**Built with the use of AI:** the changes in this fork were made with Claude
+(Anthropic's AI assistant) and tested on real PSP hardware. AI-assisted code can
+contain mistakes, so review it before relying on it.
+
+You need your own legally obtained ROM. This repository contains no Nintendo
+assets, and you should not upload your ROM or anything built from it.
+
+Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP)
+
+## Building and installing
+
+Upstream's [PSP build instructions](docs/psp-first-boot-assets.md) apply. With
+the pspdev toolchain on `PATH`, build only the NTSC 1.1 module like this:
+
+```
+./psp.sh PSP_PORT_VERSIONS=ntsc-1.1
+```
+
+Copy `EBOOT.PBP`, `modules/` and `Plugins/` from `build/psp-port/ntsc-1.0/` to
+`PSP/GAME/OOT_PSP/` on the memory stick, and put your ROM in
+`PSP/GAME/OOT_PSP/data/`. On first boot the game converts the ROM into its asset
+pack ("Preparing Game Data"). Leave the PSP powered on until it finishes.
+
+## Changes in this fork
+
+- **Saves** are written to a temporary file and moved into place, and the
+  previous save is kept as `oot-psp-save.bak`.
+- **Area title cards** (e.g. "Kokiri Forest") show again. The place-name files
+  in the asset pack were larger than the game's buffer, so the load was skipped.
+- **Analog stick:** a circular deadzone (default 20, set in `controls.ini`),
+  rescaled so movement starts just past it. A stick resting slightly
+  off-center no longer turns the camera endlessly.
+- **16:9 mode** no longer stretches the 3D view, and actor culling is widened to
+  match. Rooms with prerendered backgrounds stay 4:3.
+- **Quitting** stops the audio threads and the Media Engine cleanly.
+- **Graphics:**
+  - Roads, paths and shadows no longer flicker through the ground.
+  - Screen-edge clipping no longer leaves a flickering 1-pixel gap.
+  - The pause menu and east/west camera angles use the correct projection.
+  - Mirrored textures are drawn the way the N64 draws them (this fixes Epona's
+    face).
+- **Pause menu** icons stay loaded instead of being reread from the memory
+  stick each time the menu opens.
+- **HOME menu > Enhancements** (saved in `enhancements.ini`):
+  - faster text
+  - hold B to skip text you've already read
+  - skip the N64 logo
+  - quieter Navi calls
+  - the owl's repeat question defaults to No
+  - Dampe's heart piece on the first valid dig
+  - HUD size 100-130%
+
+The original upstream README follows.
+
+---
+
+[Upstream PSP build instructions](docs/psp-first-boot-assets.md) ·
+[Upstream nightly downloads](https://github.com/z2442/oot-PSP/releases)
 
 # The Legend of Zelda: Ocarina of Time
 

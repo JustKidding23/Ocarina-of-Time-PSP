@@ -1,4 +1,7 @@
 #include "libu64/gfxprint.h"
+#if PLATFORM_PSP
+#include "oot_psp_enhancements.h"
+#endif
 #include "array_count.h"
 #include "attributes.h"
 #include "controller.h"
@@ -359,6 +362,21 @@ u8 Message_ShouldAdvance(PlayState* play) {
     }
     return CHECK_BTN_ALL(input->press.button, BTN_A) || CHECK_BTN_ALL(input->press.button, BTN_B) ||
            CHECK_BTN_ALL(input->press.button, BTN_CUP);
+}
+
+/**
+ * "Hold B skips read text": true while B is held on a message the player has
+ * already finished reading before. Never used for choice boxes.
+ */
+static s32 Message_PspHoldSkip(PlayState* play) {
+#if PLATFORM_PSP
+    Input* input = &play->state.input[0];
+
+    return OotPspEnhancements_IsEnabled(OOT_PSP_ENH_SKIP_READ_TEXT) && CHECK_BTN_ALL(input->cur.button, BTN_B) &&
+           OotPspEnhancements_HasSeenText(play->msgCtx.textId);
+#else
+    return false;
+#endif
 }
 
 u8 Message_ShouldAdvanceSilent(PlayState* play) {
@@ -1474,7 +1492,13 @@ void Message_DrawTextWide(PlayState* play, Gfx** gfxP) {
     }
 
     if (msgCtx->textDelayTimer == 0) {
+#if PLATFORM_PSP
+        // "Faster text" reveals several characters per frame. Messages that set
+        // their own delay keep their pacing.
+        msgCtx->textDrawPos = i + ((msgCtx->textDelay == 0) ? OotPspEnhancements_GetTextSpeed() : 1);
+#else
         msgCtx->textDrawPos = i + 1;
+#endif
         msgCtx->textDelayTimer = msgCtx->textDelay;
     } else {
         msgCtx->textDelayTimer--;
@@ -1692,6 +1716,13 @@ void Message_DrawText(PlayState* play, Gfx** gfxP) {
                     msgCtx->choiceTextId = msgCtx->textId;
                     msgCtx->stateTimer = 4;
                     msgCtx->choiceIndex = 0;
+#if PLATFORM_PSP
+                    // Kaepora Gaebora's "hear it again?" choices put repeating first.
+                    if (OotPspEnhancements_IsEnabled(OOT_PSP_ENH_OWL_DEFAULT_NO) && (msgCtx->talkActor != NULL) &&
+                        (msgCtx->talkActor->id == ACTOR_EN_OWL)) {
+                        msgCtx->choiceIndex = 1;
+                    }
+#endif
                     Font_LoadMessageBoxIcon(font, TEXTBOX_ICON_ARROW);
                 }
                 break;
@@ -1773,7 +1804,13 @@ void Message_DrawText(PlayState* play, Gfx** gfxP) {
         }
     }
     if (msgCtx->textDelayTimer == 0) {
+#if PLATFORM_PSP
+        // "Faster text" reveals several characters per frame. Messages that set
+        // their own delay keep their pacing.
+        msgCtx->textDrawPos = i + ((msgCtx->textDelay == 0) ? OotPspEnhancements_GetTextSpeed() : 1);
+#else
         msgCtx->textDrawPos = i + 1;
+#endif
         msgCtx->textDelayTimer = msgCtx->textDelay;
     } else {
         msgCtx->textDelayTimer--;
@@ -4387,13 +4424,14 @@ void Message_Update(PlayState* play) {
                 break;
             case MSGMODE_TEXT_DISPLAYING:
                 if (msgCtx->textBoxType != TEXTBOX_TYPE_NONE_BOTTOM && YREG(31) == 0 &&
-                    CHECK_BTN_ALL(input->press.button, BTN_B) && !msgCtx->textUnskippable) {
+                    (CHECK_BTN_ALL(input->press.button, BTN_B) || Message_PspHoldSkip(play)) &&
+                    !msgCtx->textUnskippable) {
                     sTextboxSkipped = true;
                     msgCtx->textDrawPos = msgCtx->decodedTextLen;
                 }
                 break;
             case MSGMODE_TEXT_AWAIT_INPUT:
-                if (YREG(31) == 0 && Message_ShouldAdvance(play)) {
+                if (YREG(31) == 0 && (Message_ShouldAdvance(play) || Message_PspHoldSkip(play))) {
                     msgCtx->msgMode = MSGMODE_TEXT_DISPLAYING;
                     msgCtx->textDrawPos++;
                 }
@@ -4405,7 +4443,7 @@ void Message_Update(PlayState* play) {
                 }
                 break;
             case MSGMODE_TEXT_AWAIT_NEXT:
-                if (Message_ShouldAdvance(play)) {
+                if (Message_ShouldAdvance(play) || Message_PspHoldSkip(play)) {
                     msgCtx->msgMode = MSGMODE_TEXT_NEXT_MSG;
                     msgCtx->textUnskippable = false;
                     msgCtx->msgBufPos++;
@@ -4429,8 +4467,16 @@ void Message_Update(PlayState* play) {
                             Message_CloseTextbox(play);
                             PRINTF("OCARINA_MODE=%d\n", play->msgCtx.ocarinaMode);
                         }
-                    } else if (Message_ShouldAdvanceSilent(play)) {
+                    } else if (Message_ShouldAdvanceSilent(play) ||
+                               (((msgCtx->textboxEndType == TEXTBOX_ENDTYPE_DEFAULT) ||
+                                 (msgCtx->textboxEndType == TEXTBOX_ENDTYPE_HAS_NEXT)) &&
+                                Message_PspHoldSkip(play))) {
                         PRINTF("select=%d\n", msgCtx->textboxEndType);
+#if PLATFORM_PSP
+                        // Only count a message as read once the player dismisses it, so
+                        // holding B never skips text on its first appearance.
+                        OotPspEnhancements_MarkTextSeen(msgCtx->textId);
+#endif
                         if (msgCtx->textboxEndType == TEXTBOX_ENDTYPE_HAS_NEXT) {
                             SFX_PLAY_CENTERED(NA_SE_SY_MESSAGE_PASS);
 #if OOT_NTSC

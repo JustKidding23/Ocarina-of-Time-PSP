@@ -13,6 +13,10 @@ typedef enum OotPspHudAnchor {
     OOT_PSP_HUD_ANCHOR_RIGHT,
 } OotPspHudAnchor;
 
+/* Optional flag: anchor the following HUD element to the bottom edge when the
+ * HUD is scaled (texture rectangles pick top or bottom from their position). */
+#define OOT_PSP_HUD_ANCHOR_BOTTOM_FLAG 0x10
+
 #define gOotPspSetHudAnchor(pkt, anchor) gDPNoOpTag((pkt), OOT_PSP_HUD_ANCHOR_TAG | (anchor))
 #define gOotPspApplyVisMono(pkt) gDPNoOpTag((pkt), OOT_PSP_VISMONO_TAG)
 

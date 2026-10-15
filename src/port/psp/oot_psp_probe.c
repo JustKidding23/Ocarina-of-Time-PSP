@@ -16,6 +16,7 @@
 #include "oot_psp_asset_loader.h"
 #include "oot_psp_audio_backend.h"
 #include "oot_psp_controls.h"
+#include "oot_psp_enhancements.h"
 #include "oot_psp_dve.h"
 #include "oot_psp_home_menu.h"
 #include "oot_psp_performance.h"
@@ -103,6 +104,9 @@ static void OotPspProfiler_Stop(UNUSED int shouldDump) {
 #endif
 
 static int OotPspExitCallback(UNUSED int arg1, UNUSED int arg2, UNUSED void* common) {
+    /* Quitting from the system menu: stop the Media Engine before the
+     * system unloads the game. */
+    OotPspAudioBackend_Shutdown();
     return 0;
 }
 
@@ -182,6 +186,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     OotPspControls_Load();
+    OotPspEnhancements_Load();
     OotPspGame_Init();
     Graph_Init(&gfxCtx);
     OotPspProfiler_Start();
@@ -226,6 +231,9 @@ int main(int argc, char** argv) {
         }
 
         if (nextInit == NULL) {
+            /* Stop audio and the Media Engine before freeing anything it may
+             * still be reading. */
+            OotPspAudioBackend_Shutdown();
             GameState_Destroy(gameState);
             SYSTEM_ARENA_FREE(gameState, __FILE__, __LINE__);
             break;
@@ -243,6 +251,7 @@ int main(int argc, char** argv) {
 #if defined(OOTDEBUG)
     OotPspPerformance_Flush();
 #endif
+    OotPspAudioBackend_Shutdown();
     Graph_Destroy(&gfxCtx);
     OotPspDve_Shutdown();
     sceKernelExitGame();

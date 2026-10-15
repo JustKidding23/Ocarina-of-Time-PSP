@@ -11,6 +11,7 @@
 #define _LANGUAGE_C
 #endif
 #include "ultra64.h"
+#include "oot_psp_enhancements.h"
 
 #ifdef GU_PI
 #undef GU_PI
@@ -819,6 +820,7 @@ static void gfx_scegu_render_home_menu_main(int selectedIndex, uint8_t highlight
         "Resume Game",
         "Controller Mapping",
         "Video Settings",
+        "Enhancements",
         "About",
         "Exit Game",
     };
@@ -827,12 +829,12 @@ static void gfx_scegu_render_home_menu_main(int selectedIndex, uint8_t highlight
     gfx_scegu_draw_rect(0, 0, HOME_MENU_WIDTH, HOME_MENU_HEIGHT, gfx_scegu_rgba(0, 0, 0, 96));
     gfx_scegu_draw_rect(112, 34, 256, 210, gfx_scegu_rgba(0, 0, 0, 132));
 
-    for (i = 0; i < 5; i++) {
-        int y = 62 + (i * 38);
+    for (i = 0; i < (int)(sizeof(items) / sizeof(items[0])); i++) {
+        int y = 60 + (i * 33);
         unsigned int color = gfx_scegu_rgba(218, 224, 218, 255);
 
         if (selectedIndex == i) {
-            gfx_scegu_draw_rect(128, y - 22, 224, 28,
+            gfx_scegu_draw_rect(128, y - 21, 224, 27,
                                 gfx_scegu_rgba(highlightRed, highlightGreen, highlightBlue, 205));
             color = gfx_scegu_rgba(255, 255, 245, 255);
         }
@@ -1164,6 +1166,62 @@ static void gfx_scegu_render_video_settings(int selectedIndex, const char* statu
 #endif
 
     gfx_scegu_draw_fallback_text_centered(HOME_MENU_WIDTH / 2, 116, "Video Settings", 4,
+                                          gfx_scegu_rgba(255, 255, 245, 255));
+    gfx_scegu_draw_fallback_text_centered(HOME_MENU_WIDTH / 2, 158, "Back", 4,
+                                          gfx_scegu_rgba(218, 224, 218, 255));
+}
+
+static void gfx_scegu_render_enhancements(int selectedIndex, const char* statusMessage, uint8_t highlightRed,
+                                          uint8_t highlightGreen, uint8_t highlightBlue) {
+    char line[80];
+    int row;
+
+    gfx_scegu_draw_rect(0, 0, HOME_MENU_WIDTH, HOME_MENU_HEIGHT, gfx_scegu_rgba(0, 0, 0, 112));
+    gfx_scegu_draw_rect(34, 14, 412, 248, gfx_scegu_rgba(0, 0, 0, 154));
+    gfx_scegu_draw_home_menu_text(HOME_MENU_WIDTH / 2, 38, "Enhancements", 0.82f,
+                                  gfx_scegu_rgba(255, 255, 245, 255), gfx_scegu_rgba(0, 0, 0, 180),
+                                  INTRAFONT_ALIGN_CENTER);
+
+#if OOT_PSP_USE_INTRAFONT
+    if (gfx_scegu_ensure_home_menu_font()) {
+        for (row = 0; row < OOT_PSP_ENH_COUNT + 4; row++) {
+            int y = 62 + (row * 18);
+            unsigned int color = gfx_scegu_rgba(218, 224, 218, 255);
+
+            if (selectedIndex == row) {
+                gfx_scegu_draw_rect(54, y - 14, 372, 18,
+                                    gfx_scegu_rgba(highlightRed, highlightGreen, highlightBlue, 205));
+                color = gfx_scegu_rgba(255, 255, 245, 255);
+            }
+
+            if (row < OOT_PSP_ENH_COUNT) {
+                snprintf(line, sizeof(line), "%s: %s", OotPspEnhancements_GetName((OotPspEnhancement)row),
+                         OotPspEnhancements_IsEnabled((OotPspEnhancement)row) ? "On" : "Off");
+            } else if (row == OOT_PSP_ENH_COUNT) {
+                snprintf(line, sizeof(line), "HUD size: %d%%", (int)OotPspEnhancements_GetHudScalePercent());
+            } else if (row == OOT_PSP_ENH_COUNT + 1) {
+                snprintf(line, sizeof(line), "Save enhancements.ini");
+            } else if (row == OOT_PSP_ENH_COUNT + 2) {
+                snprintf(line, sizeof(line), "Reset defaults");
+            } else {
+                snprintf(line, sizeof(line), "Back");
+            }
+
+            gfx_scegu_draw_home_menu_text(70, y, line, 0.6f, color, gfx_scegu_rgba(0, 0, 0, 180),
+                                          INTRAFONT_ALIGN_LEFT);
+        }
+
+        gfx_scegu_draw_home_menu_text(HOME_MENU_WIDTH / 2, 254,
+                                      ((statusMessage != NULL) && (statusMessage[0] != '\0'))
+                                          ? statusMessage
+                                          : "Left/Right change  Cross select  Circle back",
+                                      0.48f, gfx_scegu_rgba(170, 190, 180, 255), gfx_scegu_rgba(0, 0, 0, 160),
+                                      INTRAFONT_ALIGN_CENTER);
+        return;
+    }
+#endif
+
+    gfx_scegu_draw_fallback_text_centered(HOME_MENU_WIDTH / 2, 116, "Enhancements", 4,
                                           gfx_scegu_rgba(255, 255, 245, 255));
     gfx_scegu_draw_fallback_text_centered(HOME_MENU_WIDTH / 2, 158, "Back", 4,
                                           gfx_scegu_rgba(218, 224, 218, 255));
@@ -1605,6 +1663,26 @@ static void gfx_scegu_set_viewport(int x, int y, int width, int height) {
 static void gfx_scegu_set_scissor(int x, int y, int width, int height) {
     int originX = (SCR_WIDTH - (int)gfx_current_dimensions.width) / 2;
     int originY = (SCR_HEIGHT - (int)gfx_current_dimensions.height) / 2;
+    int right = x + width;
+    int top = y + height;
+
+    /* Never draw outside the active picture. Geometry that crosses the screen
+     * edge is clipped by this scissor rather than on the CPU, so in a 4:3
+     * prerendered room it must stop at the pillarbox. */
+    if (x < 0) {
+        x = 0;
+    }
+    if (y < 0) {
+        y = 0;
+    }
+    if (right > (int)gfx_current_dimensions.width) {
+        right = (int)gfx_current_dimensions.width;
+    }
+    if (top > (int)gfx_current_dimensions.height) {
+        top = (int)gfx_current_dimensions.height;
+    }
+    width = (right > x) ? (right - x) : 0;
+    height = (top > y) ? (top - y) : 0;
 
     sceGuScissor(originX + x, SCR_HEIGHT - originY - y - height, originX + x + width,
                  SCR_HEIGHT - originY - y);
@@ -2200,6 +2278,9 @@ void gfx_scegu_render_home_menu(int selectedIndex, int screen, int submenuSelect
                                         highlightBlue);
     } else if (screen == 3) {
         gfx_scegu_render_about(submenuSelectedIndex);
+    } else if (screen == 4) {
+        gfx_scegu_render_enhancements(submenuSelectedIndex, statusMessage, highlightRed, highlightGreen,
+                                      highlightBlue);
     } else {
         gfx_scegu_render_home_menu_main(selectedIndex, highlightRed, highlightGreen, highlightBlue);
     }
