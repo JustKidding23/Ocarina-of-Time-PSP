@@ -1,34 +1,46 @@
 # Ocarina of Time PSP
 
-The Legend of Zelda: Ocarina of Time running natively on the Sony PSP (not
-emulated). This is a fork of [z2442/oot-PSP](https://github.com/z2442/oot-PSP),
-which is built on the [zeldaret/oot](https://github.com/zeldaret/oot)
-decompilation, with fixes and enhancements on top. It's tested on a PSP 3001
-with custom firmware and an NTSC 1.1 (US) ROM. The work is on the `psp3001`
-branch.
+The Legend of Zelda: Ocarina of Time running natively on the Sony PSP. It isn't an emulator:
+the game is compiled for the PSP from the [zeldaret/oot](https://github.com/zeldaret/oot)
+decompilation, by way of [z2442/oot-PSP](https://github.com/z2442/oot-PSP), with fixes and
+enhancements on top. It's played on a PSP 3001 with custom firmware (6.61 PRO-C). The work
+is on the `psp3001` branch.
 
-**Built with the use of AI:** the changes in this fork were made with Claude
-(Anthropic's AI assistant) and tested on real PSP hardware. AI-assisted code can
+**Built with AI, openly.** The changes in this fork were made with Claude, Anthropic's AI
+assistant, working in Claude Code alongside the owner of this repository, who tested each
+build on a real PSP. [How this was made](#how-this-was-made) says more. AI-written code can
 contain mistakes, so review it before relying on it.
 
-You need your own legally obtained ROM. This repository contains no Nintendo
-assets, and you should not upload your ROM or anything built from it.
+**No game files here.** You need your own ROM of the game. The download and the source have
+no Nintendo assets: the game is put together from your ROM on the PSP.
 
-Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP) and [Pokémon Emerald PSP](https://github.com/JustKidding23/Pokemon-Emerald-PSP)
+## Play it
 
-## Building and installing
+1. Download `Ocarina-of-Time-PSP-v1.0.zip` from the
+   [latest release](https://github.com/JustKidding23/Ocarina-of-Time-PSP/releases/latest).
+2. Unzip it to the root of the memory stick, so you get `PSP/GAME/OOT_PSP/`.
+3. Put your ROM in `PSP/GAME/OOT_PSP/data/`. It has to be the **NTSC 1.1 (US)** version, in
+   `.z64` format.
+4. Eject the memory stick from your computer before leaving USB mode.
+5. Start it from Game > Memory Stick. The first time, it turns your ROM into the game's data
+   ("Preparing Game Data"). Leave the PSP on until it's done.
 
-Upstream's [PSP build instructions](docs/psp-first-boot-assets.md) apply. With
-the pspdev toolchain on `PATH`, build only the NTSC 1.1 module like this:
+Your save is `oot-psp-save.bin` in `PSP/GAME/OOT_PSP/`, with the previous one kept as
+`oot-psp-save.bak`. Back them up before replacing the game with a newer version. The HOME
+menu has the controls, video and enhancement settings, kept in `controls.ini`, `video.ini`
+and `enhancements.ini`.
+
+## Building it yourself
+
+Upstream's [PSP build instructions](docs/psp-first-boot-assets.md) apply. With the pspdev
+toolchain on `PATH`, build only the NTSC 1.1 module like this:
 
 ```
 ./psp.sh PSP_PORT_VERSIONS=ntsc-1.1
 ```
 
 Copy `EBOOT.PBP`, `modules/` and `Plugins/` from `build/psp-port/ntsc-1.0/` to
-`PSP/GAME/OOT_PSP/` on the memory stick, and put your ROM in
-`PSP/GAME/OOT_PSP/data/`. On first boot the game converts the ROM into its asset
-pack ("Preparing Game Data"). Leave the PSP powered on until it finishes.
+`PSP/GAME/OOT_PSP/` on the memory stick, and put your ROM in `PSP/GAME/OOT_PSP/data/`.
 
 ## Changes in this fork
 
@@ -58,6 +70,17 @@ pack ("Preparing Game Data"). Leave the PSP powered on until it finishes.
   - the owl's repeat question defaults to No
   - Dampe's heart piece on the first valid dig
   - HUD size 100-130%
+
+## How this was made
+
+Claude made these changes in Claude Code in October 2026, directed by the owner of this
+repository, who built each version and played it on their PSP. The commit messages say what
+each change does and how it was tested.
+
+[CREDITS.md](CREDITS.md) names everyone whose work this is built on.
+
+Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP) and
+[Pokémon Emerald PSP](https://github.com/JustKidding23/Pokemon-Emerald-PSP)
 
 The original upstream README follows.
 
