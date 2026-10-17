@@ -79,6 +79,9 @@ each change does and how it was tested.
 
 [CREDITS.md](CREDITS.md) names everyone whose work this is built on.
 
+Want to help, or found a problem? [CONTRIBUTING.md](CONTRIBUTING.md) says how. Reports
+from playing on your PSP are as welcome as code.
+
 Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP) and
 [Pokémon Emerald PSP](https://github.com/JustKidding23/Pokemon-Emerald-PSP)
 
