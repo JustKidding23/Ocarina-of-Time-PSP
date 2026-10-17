@@ -14,7 +14,7 @@ contain mistakes, so review it before relying on it.
 You need your own legally obtained ROM. This repository contains no Nintendo
 assets, and you should not upload your ROM or anything built from it.
 
-Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP)
+Also by me: [SM64 PSP](https://github.com/JustKidding23/SM64-PSP) and [Pokémon Emerald PSP](https://github.com/JustKidding23/Pokemon-Emerald-PSP)
 
 ## Building and installing
 
